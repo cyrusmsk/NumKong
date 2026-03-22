@@ -34,7 +34,7 @@ CMakeCache.txt
 *.d
 
 # D files
-!d/*.d
+!d/**/*.d
 
 # Compiled Object files
 *.slo
