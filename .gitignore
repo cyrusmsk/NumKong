@@ -33,6 +33,9 @@ CMakeCache.txt
 # Prerequisites
 *.d
 
+# D files
+!d/*.d
+
 # Compiled Object files
 *.slo
 *.lo
