@@ -14,12 +14,20 @@
 #define NK_REDUCE_SERIAL_H
 
 #include "numkong/types.h"
-#include "numkong/scalar/serial.h"
 #include "numkong/cast/serial.h"
 #include "numkong/scalar/serial.h"
 
 #if defined(__cplusplus)
 extern "C" {
+#endif
+
+/*  Keep the serial instantiations below actually scalar, regardless of build type.
+ *  See dots/serial.h for rationale. */
+#if defined(__clang__)
+#pragma clang attribute push(__attribute__((noinline)), apply_to = function)
+#elif defined(__GNUC__)
+#pragma GCC push_options
+#pragma GCC optimize("no-tree-vectorize", "no-tree-slp-vectorize", "no-ipa-cp-clone", "no-inline")
 #endif
 
 NK_INTERNAL nk_f64_t nk_reduce_sum_f64_serial_(nk_f64_t const *values, nk_f64_t const *compensations, int count) {
@@ -140,22 +148,22 @@ NK_PUBLIC void nk_reduce_moments_u16_serial(                       //
 NK_PUBLIC void nk_reduce_moments_i32_serial(                       //
     nk_i32_t const *data, nk_size_t count, nk_size_t stride_bytes, //
     nk_i64_t *sum_ptr, nk_u64_t *sumsq_ptr) {
-    nk_u64_t sum_lower = 0;
-    nk_i64_t sum_upper = 0;
+    nk_u64_t sum_low = 0;
+    nk_i64_t sum_high = 0;
     nk_u64_t sumsq = 0;
     unsigned char const *ptr = (unsigned char const *)data;
     for (nk_size_t i = 0; i < count; ++i, ptr += stride_bytes) {
         nk_i64_t val = (nk_i64_t)(*(nk_i32_t const *)ptr);
         nk_u64_t product = (nk_u64_t)(val * val);
-        nk_u64_t sum_before = sum_lower;
-        sum_lower += (nk_u64_t)val;
-        if (sum_lower < sum_before) sum_upper++;
-        sum_upper += (val >> 63);
+        nk_u64_t sum_before = sum_low;
+        sum_low += (nk_u64_t)val;
+        if (sum_low < sum_before) sum_high++;
+        sum_high += (val >> 63);
         sumsq = nk_u64_saturating_add_serial(sumsq, product);
     }
-    nk_i64_t sum_lower_signed = (nk_i64_t)sum_lower;
-    if (sum_upper == (sum_lower_signed >> 63)) *sum_ptr = sum_lower_signed;
-    else if (sum_upper >= 0) *sum_ptr = NK_I64_MAX;
+    nk_i64_t sum_low_signed = (nk_i64_t)sum_low;
+    if (sum_high == (sum_low_signed >> 63)) *sum_ptr = sum_low_signed;
+    else if (sum_high >= 0) *sum_ptr = NK_I64_MAX;
     else *sum_ptr = NK_I64_MIN;
     *sumsq_ptr = sumsq;
 }
@@ -177,8 +185,8 @@ NK_PUBLIC void nk_reduce_moments_u32_serial(                       //
 NK_PUBLIC void nk_reduce_moments_i64_serial(                       //
     nk_i64_t const *data, nk_size_t count, nk_size_t stride_bytes, //
     nk_i64_t *sum_ptr, nk_u64_t *sumsq_ptr) {
-    nk_u64_t sum_lower = 0;
-    nk_i64_t sum_upper = 0;
+    nk_u64_t sum_low = 0;
+    nk_i64_t sum_high = 0;
     nk_u64_t sumsq = 0;
     unsigned char const *ptr = (unsigned char const *)data;
     for (nk_size_t i = 0; i < count; ++i, ptr += stride_bytes) {
@@ -186,14 +194,14 @@ NK_PUBLIC void nk_reduce_moments_i64_serial(                       //
         nk_i64_t product = nk_i64_saturating_mul_serial(val, val);
         nk_u64_t unsigned_product = (nk_u64_t)product;
         sumsq = nk_u64_saturating_add_serial(sumsq, unsigned_product);
-        nk_u64_t sum_before = sum_lower;
-        sum_lower += (nk_u64_t)val;
-        if (sum_lower < sum_before) sum_upper++;
-        sum_upper += (val >> 63);
+        nk_u64_t sum_before = sum_low;
+        sum_low += (nk_u64_t)val;
+        if (sum_low < sum_before) sum_high++;
+        sum_high += (val >> 63);
     }
-    nk_i64_t sum_lower_signed = (nk_i64_t)sum_lower;
-    if (sum_upper == (sum_lower_signed >> 63)) *sum_ptr = sum_lower_signed;
-    else if (sum_upper >= 0) *sum_ptr = NK_I64_MAX;
+    nk_i64_t sum_low_signed = (nk_i64_t)sum_low;
+    if (sum_high == (sum_low_signed >> 63)) *sum_ptr = sum_low_signed;
+    else if (sum_high >= 0) *sum_ptr = NK_I64_MAX;
     else *sum_ptr = NK_I64_MIN;
     *sumsq_ptr = sumsq;
 }
@@ -572,13 +580,11 @@ NK_PUBLIC void nk_reduce_minmax_f16_serial(                        //
     nk_f16_t *min_value_ptr, nk_size_t *min_index_ptr,             //
     nk_f16_t *max_value_ptr, nk_size_t *max_index_ptr) {
     unsigned char const *ptr = (unsigned char const *)data;
-    nk_f16_t min_value = nk_f16_from_u16_(NK_F16_MAX), max_value = nk_f16_from_u16_(NK_F16_MIN);
+    nk_f16_t min_value = NK_F16_MAX, max_value = NK_F16_MIN;
     nk_size_t min_idx = NK_SIZE_MAX, max_idx = NK_SIZE_MAX;
     for (nk_size_t i = 0; i < count; ++i, ptr += stride_bytes) {
         nk_f16_t raw_value = *(nk_f16_t const *)ptr;
-        nk_fui16_t raw_fui;
-        raw_fui.f = raw_value;
-        if (nk_f16_is_nan_(raw_fui.u)) continue;
+        if (nk_f16_is_nan_(raw_value)) continue;
         if (min_idx == NK_SIZE_MAX || nk_f16_order_serial(raw_value, min_value) < 0) min_value = raw_value, min_idx = i;
         if (max_idx == NK_SIZE_MAX || nk_f16_order_serial(raw_value, max_value) > 0) max_value = raw_value, max_idx = i;
     }
@@ -591,13 +597,11 @@ NK_PUBLIC void nk_reduce_minmax_bf16_serial(                        //
     nk_bf16_t *min_value_ptr, nk_size_t *min_index_ptr,             //
     nk_bf16_t *max_value_ptr, nk_size_t *max_index_ptr) {
     unsigned char const *ptr = (unsigned char const *)data;
-    nk_bf16_t min_value = nk_bf16_from_u16_(NK_BF16_MAX), max_value = nk_bf16_from_u16_(NK_BF16_MIN);
+    nk_bf16_t min_value = NK_BF16_MAX, max_value = NK_BF16_MIN;
     nk_size_t min_idx = NK_SIZE_MAX, max_idx = NK_SIZE_MAX;
     for (nk_size_t i = 0; i < count; ++i, ptr += stride_bytes) {
         nk_bf16_t raw_value = *(nk_bf16_t const *)ptr;
-        nk_fui16_t raw_fui;
-        raw_fui.bf = raw_value;
-        if (nk_bf16_is_nan_(raw_fui.u)) continue;
+        if (nk_bf16_is_nan_(raw_value)) continue;
         if (min_idx == NK_SIZE_MAX || nk_bf16_order_serial(raw_value, min_value) < 0)
             min_value = raw_value, min_idx = i;
         if (max_idx == NK_SIZE_MAX || nk_bf16_order_serial(raw_value, max_value) > 0)
@@ -749,6 +753,12 @@ NK_PUBLIC void nk_reduce_minmax_u1_serial(                          //
     *min_value_ptr = min_value, *min_index_ptr = min_idx;
     *max_value_ptr = max_value, *max_index_ptr = max_idx;
 }
+
+#if defined(__clang__)
+#pragma clang attribute pop
+#elif defined(__GNUC__)
+#pragma GCC pop_options
+#endif
 
 #if defined(__cplusplus)
 } // extern "C"

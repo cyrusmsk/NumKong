@@ -7,7 +7,7 @@
  *  Defines:
  *
  *  - Sized aliases for numeric types, like: `nk_i32_t` and `nk_f64_t`.
- *  - Macros for internal compiler/hardware checks, like: `NK_TARGET_ARM_`.
+ *  - Macros for internal compiler/hardware checks, like: `NK_TARGET_ARM64_`.
  *  - Macros for feature controls, like: `NK_TARGET_NEON`
  *
  *  @section fp8_types FP8 Numeric Types
@@ -36,6 +36,29 @@
  *  @see https://www.opencompute.org/documents/ocp-8-bit-floating-point-specification-ofp8-revision-1-0-2023-12-01-pdf-1
  *  @see FP8 Formats for Deep Learning: https://arxiv.org/pdf/2209.05433
  *  @see ONNX Float8 Types: https://onnx.ai/onnx/technical/float8.html
+ *
+ *  @section fp6_types FP6 Numeric Types
+ *
+ *  The OCP Microscaling (MX) v1.0 specification defines two 6-bit floating-point formats
+ *  for block-scaled quantization. Both are "FN" (finite-numeric): all bit patterns map
+ *  to real numbers with no Inf or NaN codes. Stored byte-aligned with 2 bits of padding.
+ *
+ *      Format  Bias  Sign  Exp  Mant  Range   Subnormals  Infinity  NaN  Standard
+ *      E2M3    1     1     2    3     ±7.5    14 of 64    ❌ No     ❌   OCP MX v1.0
+ *      E3M2    3     1     3    2     ±28     6 of 64     ❌ No     ❌   OCP MX v1.0
+ *
+ *  E2M3 favors mantissa precision (3 bits) for narrow dynamic range — ideal for activations.
+ *  E3M2 favors exponent range (3 bits) for wider dynamic range — suited for weights.
+ *  Both follow IEEE 754 subnormal rules: when exp=0, the implicit leading bit is 0,
+ *  giving value = (-1)^s × 0.mmm × 2^(1-bias). This provides gradual underflow to zero.
+ *
+ *  No hardware directly computes on FP6. On Arm with FEAT_FP8DOT4, E2M3 values can be
+ *  losslessly promoted to E4M3 (same mantissa width, rebias exponent by +6) and E3M2 to
+ *  E5M2 (same mantissa width, rebias exponent by +12), then fed to FDOT instructions.
+ *  Subnormal values (exp=0) require normalization during this promotion.
+ *
+ *  @see https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf
+ *  @see https://arxiv.org/abs/2401.14112 (FP6-LLM paper)
  */
 #ifndef NK_TYPES_H
 #define NK_TYPES_H
@@ -44,6 +67,20 @@
 // to expose `syscall` and other GNU extensions when C extensions are disabled.
 #if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE
+#endif
+
+// MSan (MemorySanitizer) cannot track data flow through SVE horizontal reductions
+// like `svaddv`, which move data from vector registers to scalar registers via
+// architecture-specific paths invisible to the compiler. `nk_unpoison_` marks the
+// resulting scalar as initialized so MSan does not report false positives.
+#if defined(__has_feature)
+#if __has_feature(memory_sanitizer)
+#include <sanitizer/msan_interface.h>
+#define nk_unpoison_(ptr, size) __msan_unpoison((ptr), (size))
+#endif
+#endif
+#ifndef nk_unpoison_
+#define nk_unpoison_(ptr, size) (void)(ptr), (void)(size)
 #endif
 
 // Inferring target OS: Windows, macOS, Linux, or FreeBSD
@@ -88,6 +125,20 @@
 #define NK_DYNAMIC NK_PUBLIC
 #endif // NK_DYNAMIC_DISPATCH
 
+// Vector union types use type punning by design (write as f16, read as f32, etc.).
+// Without this, GCC at -O2 assumes strict aliasing and may optimize away valid accesses.
+#if defined(__GNUC__) || defined(__clang__)
+#define NK_MAY_ALIAS_ __attribute__((may_alias))
+#else
+#define NK_MAY_ALIAS_
+#endif
+
+#if defined(__has_builtin)
+#define nk_has_builtin_(x) __has_builtin(x)
+#else
+#define nk_has_builtin_(x) 0
+#endif
+
 // Allow SIMD kernels to redirect small inputs to serial implementations.
 // Enabled by default for production use. Tests and benchmarks may disable
 // this to isolate SIMD path behavior on small inputs.
@@ -95,32 +146,52 @@
 #define NK_ALLOW_ISA_REDIRECT 1
 #endif
 
-// Compiling for Arm: NK_TARGET_ARM_
-#if !defined(NK_TARGET_ARM_)
+// Compiling for 64-bit Arm: NK_TARGET_ARM64_
+// https://arm-software.github.io/acle/main/acle.html
+#if !defined(NK_TARGET_ARM64_)
 #if defined(__aarch64__) || defined(_M_ARM64)
-#define NK_TARGET_ARM_ 1
+#define NK_TARGET_ARM64_ 1
 #else
-#define NK_TARGET_ARM_ 0
+#define NK_TARGET_ARM64_ 0
 #endif // defined(__aarch64__) || defined(_M_ARM64)
-#endif // !defined(NK_TARGET_ARM_)
+#endif // !defined(NK_TARGET_ARM64_)
 
-// Compiling for x86: NK_TARGET_X86_
-#if !defined(NK_TARGET_X86_)
+// Compiling for x86: NK_TARGET_X8664_
+// https://www.intel.com/content/www/us/en/docs/dpcpp-cpp-compiler/developer-guide-reference/2024-2/additional-predefined-macros.html
+#if !defined(NK_TARGET_X8664_)
 #if defined(__x86_64__) || defined(_M_X64)
-#define NK_TARGET_X86_ 1
+#define NK_TARGET_X8664_ 1
 #else
-#define NK_TARGET_X86_ 0
+#define NK_TARGET_X8664_ 0
 #endif // defined(__x86_64__) || defined(_M_X64)
-#endif // !defined(NK_TARGET_X86_)
+#endif // !defined(NK_TARGET_X8664_)
 
-// Compiling for RISC-V: NK_TARGET_RISCV_
-#if !defined(NK_TARGET_RISCV_)
+// Compiling for RISC-V: NK_TARGET_RISCV64_
+#if !defined(NK_TARGET_RISCV64_)
 #if defined(__riscv) && (__riscv_xlen == 64)
-#define NK_TARGET_RISCV_ 1
+#define NK_TARGET_RISCV64_ 1
 #else
-#define NK_TARGET_RISCV_ 0
+#define NK_TARGET_RISCV64_ 0
 #endif // defined(__riscv) && (__riscv_xlen == 64)
-#endif // !defined(NK_TARGET_RISCV_)
+#endif // !defined(NK_TARGET_RISCV64_)
+
+// Compiling for LoongArch: NK_TARGET_LOONGARCH64_
+#if !defined(NK_TARGET_LOONGARCH64_)
+#if defined(__loongarch__)
+#define NK_TARGET_LOONGARCH64_ 1
+#else
+#define NK_TARGET_LOONGARCH64_ 0
+#endif // defined(__loongarch__)
+#endif // !defined(NK_TARGET_LOONGARCH64_)
+
+// Compiling for Power: NK_TARGET_POWER64_
+#if !defined(NK_TARGET_POWER64_)
+#if defined(__powerpc64__) || defined(__ppc64__) || defined(_ARCH_PPC64)
+#define NK_TARGET_POWER64_ 1
+#else
+#define NK_TARGET_POWER64_ 0
+#endif // defined(__powerpc64__) || defined(__ppc64__) || defined(_ARCH_PPC64)
+#endif // !defined(NK_TARGET_POWER64_)
 
 // Compiling for WASM: NK_TARGET_WASM_
 #if !defined(NK_TARGET_WASM_)
@@ -152,7 +223,7 @@
 #endif // !defined(NK_TARGET_V128RELAXED) || ...
 
 // Compiling for RISC-V Vector: NK_TARGET_RVV
-#if !defined(NK_TARGET_RVV) || (NK_TARGET_RVV && !NK_TARGET_RISCV_)
+#if !defined(NK_TARGET_RVV) || (NK_TARGET_RVV && !NK_TARGET_RISCV64_)
 #if defined(__riscv_v) && (__riscv_v >= 1000000)
 #define NK_TARGET_RVV 1
 #else
@@ -194,58 +265,99 @@
 #endif // defined(__riscv_zvbb) && (__riscv_zvbb > 0)
 #endif // !defined(NK_TARGET_RVVBB) || ...
 
-// Compiling for Arm: NK_TARGET_NEON
-#if !defined(NK_TARGET_NEON) || (NK_TARGET_NEON && !NK_TARGET_ARM_)
-#if defined(__ARM_NEON)
+// Compiling for LoongArch LASX (256-bit SIMD): NK_TARGET_LOONGSONASX
+// LASX provides 32 × 256-bit vector registers, widening integer multiply-accumulate,
+// and f32-to-f64 conversion (xvfcvtl_d_s / xvfcvth_d_s) but no widening FMA.
+#if !defined(NK_TARGET_LOONGSONASX) || (NK_TARGET_LOONGSONASX && !NK_TARGET_LOONGARCH64_)
+#if defined(__loongarch_asx)
+#define NK_TARGET_LOONGSONASX 1
+#else
+#undef NK_TARGET_LOONGSONASX
+#define NK_TARGET_LOONGSONASX 0
+#endif // defined(__loongarch_asx)
+#endif // !defined(NK_TARGET_LOONGSONASX) || ...
+
+// Compiling for Power VSX (128-bit SIMD, POWER9+ baseline): NK_TARGET_POWERVSX
+// VSX provides 64 × 128-bit registers, FMA (vec_madd), vec_msum (multiply-sum), hardware f16
+// conversion (vec_extract_fp32_from_shorth/l), length-limited loads (vec_xl_len), per-byte
+// popcount (vec_popcnt), and vec_cmpne. Requires POWER9 (ISA 3.0) or newer.
+#if !defined(NK_TARGET_POWERVSX) || (NK_TARGET_POWERVSX && !NK_TARGET_POWER64_)
+#if defined(__VSX__) && defined(__POWER9_VECTOR__)
+#define NK_TARGET_POWERVSX 1
+#else
+#undef NK_TARGET_POWERVSX
+#define NK_TARGET_POWERVSX 0
+#endif // defined(__VSX__)
+#endif // !defined(NK_TARGET_POWERVSX) || ...
+
+// Compiling for Arm: NK_TARGET_NEON (AArch64 only, AArch32 NEON is not supported)
+#if !defined(NK_TARGET_NEON) || (NK_TARGET_NEON && !NK_TARGET_ARM64_)
+#if (defined(__ARM_NEON) && defined(__aarch64__)) || (defined(_MSC_VER) && defined(_M_ARM64))
 #define NK_TARGET_NEON 1
 #else
 #undef NK_TARGET_NEON
 #define NK_TARGET_NEON 0
-#endif // defined(__ARM_NEON)
+#endif // (defined(__ARM_NEON) && defined(__aarch64__)) || ...
 #endif // !defined(NK_TARGET_NEON) || ...
 
-// Compiling for Arm: NK_TARGET_NEONSDOT
-#if !defined(NK_TARGET_NEONSDOT) || (NK_TARGET_NEONSDOT && !NK_TARGET_ARM_)
-#if defined(__ARM_NEON)
+// Compiling for Arm: NK_TARGET_NEONSDOT (FEAT_DotProd, AArch64 only)
+#if !defined(NK_TARGET_NEONSDOT) || (NK_TARGET_NEONSDOT && !NK_TARGET_ARM64_)
+#if (defined(__ARM_FEATURE_DOTPROD) && defined(__aarch64__)) || \
+    (defined(_MSC_VER) && defined(_M_ARM64) && __ARM_ARCH >= 804)
 #define NK_TARGET_NEONSDOT 1
 #else
 #undef NK_TARGET_NEONSDOT
 #define NK_TARGET_NEONSDOT 0
-#endif // defined(__ARM_NEON)
+#endif
 #endif // !defined(NK_TARGET_NEONSDOT) || ...
 
-// Compiling for Arm: NK_TARGET_NEONHALF
-#if !defined(NK_TARGET_NEONHALF) || (NK_TARGET_NEONHALF && !NK_TARGET_ARM_)
-#if defined(__ARM_NEON)
+// Compiling for Arm: NK_TARGET_NEONHALF (FEAT_FP16, AArch64 only)
+#if !defined(NK_TARGET_NEONHALF) || (NK_TARGET_NEONHALF && !NK_TARGET_ARM64_)
+#if (defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) && defined(__aarch64__)) || \
+    (defined(_MSC_VER) && defined(_M_ARM64) && __ARM_ARCH >= 802)
 #define NK_TARGET_NEONHALF 1
 #else
 #undef NK_TARGET_NEONHALF
 #define NK_TARGET_NEONHALF 0
-#endif // defined(__ARM_NEON)
+#endif
 #endif // !defined(NK_TARGET_NEONHALF) || ...
 
-// Compiling for Arm: NK_TARGET_NEONFHM (FEAT_FHM - FMLAL/FMLSL widening ops)
-#if !defined(NK_TARGET_NEONFHM) || (NK_TARGET_NEONFHM && !NK_TARGET_ARM_)
-#if defined(__ARM_NEON)
+// Compiling for Arm: NK_TARGET_NEONFHM (FEAT_FHM, AArch64 only)
+#if !defined(NK_TARGET_NEONFHM) || (NK_TARGET_NEONFHM && !NK_TARGET_ARM64_)
+#if (defined(__ARM_FEATURE_FP16_FML) && defined(__aarch64__)) || \
+    (defined(_MSC_VER) && defined(_M_ARM64) && __ARM_ARCH >= 804)
 #define NK_TARGET_NEONFHM 1
 #else
 #undef NK_TARGET_NEONFHM
 #define NK_TARGET_NEONFHM 0
-#endif // defined(__ARM_NEON)
+#endif
 #endif // !defined(NK_TARGET_NEONFHM) || ...
 
-// Compiling for Arm: NK_TARGET_NEONBFDOT
-#if !defined(NK_TARGET_NEONBFDOT) || (NK_TARGET_NEONBFDOT && !NK_TARGET_ARM_)
-#if defined(__ARM_NEON)
+// Compiling for Arm: NK_TARGET_NEONBFDOT (FEAT_BF16, AArch64 only)
+#if !defined(NK_TARGET_NEONBFDOT) || (NK_TARGET_NEONBFDOT && !NK_TARGET_ARM64_)
+#if (defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC) && defined(__aarch64__)) || \
+    (defined(_MSC_VER) && defined(_M_ARM64) && __ARM_ARCH >= 806)
 #define NK_TARGET_NEONBFDOT 1
 #else
 #undef NK_TARGET_NEONBFDOT
 #define NK_TARGET_NEONBFDOT 0
-#endif // defined(__ARM_NEON)
+#endif
 #endif // !defined(NK_TARGET_NEONBFDOT) || ...
 
+// Compiling for Arm: NK_TARGET_NEONFP8 (NEON FP8 extensions, FEAT_FP8DOT4)
+// ACLE macro __ARM_FEATURE_FP8DOT4 defined by GCC 15+ and Clang 21+ when +fp8dot4 is enabled.
+// Older compilers lack mfloat8x16_t and the fp8dot4 target attribute entirely.
+#if !defined(NK_TARGET_NEONFP8) || (NK_TARGET_NEONFP8 && !NK_TARGET_ARM64_)
+#if defined(__ARM_FEATURE_FP8DOT4) && defined(__aarch64__)
+#define NK_TARGET_NEONFP8 1
+#else
+#undef NK_TARGET_NEONFP8
+#define NK_TARGET_NEONFP8 0
+#endif // defined(__ARM_FEATURE_FP8DOT4)
+#endif // !defined(NK_TARGET_NEONFP8)  || ...
+
 // Compiling for Arm: NK_TARGET_SVE
-#if !defined(NK_TARGET_SVE) || (NK_TARGET_SVE && !NK_TARGET_ARM_)
+#if !defined(NK_TARGET_SVE) || (NK_TARGET_SVE && !NK_TARGET_ARM64_)
 #if defined(__ARM_FEATURE_SVE)
 #define NK_TARGET_SVE 1
 #else
@@ -255,7 +367,7 @@
 #endif // !defined(NK_TARGET_SVE) || ...
 
 // Compiling for Arm: NK_TARGET_SVESDOT
-#if !defined(NK_TARGET_SVESDOT) || (NK_TARGET_SVESDOT && !NK_TARGET_ARM_)
+#if !defined(NK_TARGET_SVESDOT) || (NK_TARGET_SVESDOT && !NK_TARGET_ARM64_)
 #if defined(__ARM_FEATURE_SVE)
 #define NK_TARGET_SVESDOT 1
 #else
@@ -265,7 +377,7 @@
 #endif // !defined(NK_TARGET_SVESDOT) || ...
 
 // Compiling for Arm: NK_TARGET_SVEHALF
-#if !defined(NK_TARGET_SVEHALF) || (NK_TARGET_SVEHALF && !NK_TARGET_ARM_)
+#if !defined(NK_TARGET_SVEHALF) || (NK_TARGET_SVEHALF && !NK_TARGET_ARM64_)
 #if defined(__ARM_FEATURE_SVE)
 #define NK_TARGET_SVEHALF 1
 #else
@@ -275,7 +387,7 @@
 #endif // !defined(NK_TARGET_SVEHALF) || ...
 
 // Compiling for Arm: NK_TARGET_SVEBFDOT
-#if !defined(NK_TARGET_SVEBFDOT) || (NK_TARGET_SVEBFDOT && !NK_TARGET_ARM_)
+#if !defined(NK_TARGET_SVEBFDOT) || (NK_TARGET_SVEBFDOT && !NK_TARGET_ARM64_)
 #if defined(__ARM_FEATURE_SVE)
 #define NK_TARGET_SVEBFDOT 1
 #else
@@ -285,7 +397,7 @@
 #endif // !defined(NK_TARGET_SVEBFDOT) || ...
 
 // Compiling for Arm: NK_TARGET_SVE2
-#if !defined(NK_TARGET_SVE2) || (NK_TARGET_SVE2 && !NK_TARGET_ARM_)
+#if !defined(NK_TARGET_SVE2) || (NK_TARGET_SVE2 && !NK_TARGET_ARM64_)
 #if defined(__ARM_FEATURE_SVE2)
 #define NK_TARGET_SVE2 1
 #else
@@ -295,13 +407,13 @@
 #endif // !defined(NK_TARGET_SVE2) || ...
 
 // Compiling for Arm: NK_TARGET_SVE2P1
-#if !defined(NK_TARGET_SVE2P1) || (NK_TARGET_SVE2P1 && !NK_TARGET_ARM_)
+#if !defined(NK_TARGET_SVE2P1) || (NK_TARGET_SVE2P1 && !NK_TARGET_ARM64_)
 #undef NK_TARGET_SVE2P1
 #define NK_TARGET_SVE2P1 0
 #endif // !defined(NK_TARGET_SVE2P1) || ...
 
 // Compiling for Arm: NK_TARGET_SME (Scalable Matrix Extension)
-#if !defined(NK_TARGET_SME) || (NK_TARGET_SME && !NK_TARGET_ARM_)
+#if !defined(NK_TARGET_SME) || (NK_TARGET_SME && !NK_TARGET_ARM64_)
 #if defined(__ARM_FEATURE_SME)
 #define NK_TARGET_SME 1
 #else
@@ -310,7 +422,7 @@
 #endif // defined(__ARM_FEATURE_SME)
 #endif // !defined(NK_TARGET_SME) || ...
 
-#if !defined(NK_TARGET_SME2) || (NK_TARGET_SME2 && !NK_TARGET_ARM_)
+#if !defined(NK_TARGET_SME2) || (NK_TARGET_SME2 && !NK_TARGET_ARM64_)
 #if defined(__ARM_FEATURE_SME2)
 #define NK_TARGET_SME2 1
 #else
@@ -319,62 +431,73 @@
 #endif // defined(__ARM_FEATURE_SME2)
 #endif // !defined(NK_TARGET_SME2) || ...
 
-#if !defined(NK_TARGET_SME2P1) || (NK_TARGET_SME2P1 && !NK_TARGET_ARM_)
+// Compiling for Arm: NK_TARGET_SME2P1 (FEAT_SME2p1)
+// ACLE macro: __ARM_FEATURE_SME2p1 (note lowercase 'p')
+#if !defined(NK_TARGET_SME2P1) || (NK_TARGET_SME2P1 && !NK_TARGET_ARM64_)
+#if defined(__ARM_FEATURE_SME2p1)
+#define NK_TARGET_SME2P1 1
+#else
 #undef NK_TARGET_SME2P1
 #define NK_TARGET_SME2P1 0
-#endif
+#endif // defined(__ARM_FEATURE_SME2p1)
+#endif // !defined(NK_TARGET_SME2P1) || ...
 
 // AppleClang 17 exposes SME sub-features through `arm_sme.h` builtin aliases,
 // not dedicated `__ARM_FEATURE_*` predefines for every matrix subtype.
-#if !defined(NK_TARGET_SMEF64) || (NK_TARGET_SMEF64 && !NK_TARGET_ARM_)
-#if defined(__has_builtin) && __has_builtin(__builtin_sme_svmopa_za64_f64_m)
+#if !defined(NK_TARGET_SMEF64) || (NK_TARGET_SMEF64 && !NK_TARGET_ARM64_)
+#if defined(__ARM_FEATURE_SME_F64F64) || nk_has_builtin_(__builtin_sme_svmopa_za64_f64_m)
 #define NK_TARGET_SMEF64 1
 #else
 #undef NK_TARGET_SMEF64
 #define NK_TARGET_SMEF64 0
-#endif // defined(__has_builtin) && __has_builtin(__builtin_sme_svmopa_za64_f64_m)
+#endif // defined(__ARM_FEATURE_SME_F64F64) || ...
 #endif // !defined(NK_TARGET_SMEF64) || ...
 
-#if !defined(NK_TARGET_SMEBI32) || (NK_TARGET_SMEBI32 && !NK_TARGET_ARM_)
-#if defined(__has_builtin) && __has_builtin(__builtin_sme_svbmopa_za32_u32_m)
+#if !defined(NK_TARGET_SMEBI32) || (NK_TARGET_SMEBI32 && !NK_TARGET_ARM64_)
+#if nk_has_builtin_(__builtin_sme_svbmopa_za32_u32_m)
 #define NK_TARGET_SMEBI32 1
 #else
 #undef NK_TARGET_SMEBI32
 #define NK_TARGET_SMEBI32 0
-#endif // defined(__has_builtin) && __has_builtin(__builtin_sme_svbmopa_za32_u32_m)
+#endif // nk_has_builtin_(__builtin_sme_svbmopa_za32_u32_m)
 #endif // !defined(NK_TARGET_SMEBI32) || ...
 
-#if !defined(NK_TARGET_SMEHALF) || (NK_TARGET_SMEHALF && !NK_TARGET_ARM_)
-#if defined(__has_builtin) && __has_builtin(__builtin_sme_svmopa_za32_f16_m)
+#if !defined(NK_TARGET_SMEHALF) || (NK_TARGET_SMEHALF && !NK_TARGET_ARM64_)
+#if defined(__ARM_FEATURE_SME_F16F16) || nk_has_builtin_(__builtin_sme_svmopa_za32_f16_m)
 #define NK_TARGET_SMEHALF 1
 #else
 #undef NK_TARGET_SMEHALF
 #define NK_TARGET_SMEHALF 0
-#endif // defined(__has_builtin) && __has_builtin(__builtin_sme_svmopa_za32_f16_m)
+#endif // nk_has_builtin_(__builtin_sme_svmopa_za32_f16_m)
 #endif // !defined(NK_TARGET_SMEHALF) || ...
 
-#if !defined(NK_TARGET_SMEBF16) || (NK_TARGET_SMEBF16 && !NK_TARGET_ARM_)
-#if defined(__has_builtin) && __has_builtin(__builtin_sme_svmopa_za32_bf16_m)
+#if !defined(NK_TARGET_SMEBF16) || (NK_TARGET_SMEBF16 && !NK_TARGET_ARM64_)
+#if nk_has_builtin_(__builtin_sme_svmopa_za32_bf16_m)
 #define NK_TARGET_SMEBF16 1
 #else
 #undef NK_TARGET_SMEBF16
 #define NK_TARGET_SMEBF16 0
-#endif // defined(__has_builtin) && __has_builtin(__builtin_sme_svmopa_za32_bf16_m)
+#endif // nk_has_builtin_(__builtin_sme_svmopa_za32_bf16_m)
 #endif // !defined(NK_TARGET_SMEBF16) || ...
 
-#if !defined(NK_TARGET_SMELUT2) || (NK_TARGET_SMELUT2 && !NK_TARGET_ARM_)
-#if defined(__has_builtin) && __has_builtin(__builtin_sme_svluti2_lane_zt_u8)
+#if !defined(NK_TARGET_SMELUT2) || (NK_TARGET_SMELUT2 && !NK_TARGET_ARM64_)
+#if nk_has_builtin_(__builtin_sme_svluti2_lane_zt_u8)
 #define NK_TARGET_SMELUT2 1
 #else
 #undef NK_TARGET_SMELUT2
 #define NK_TARGET_SMELUT2 0
-#endif // defined(__has_builtin) && __has_builtin(__builtin_sme_svluti2_lane_zt_u8)
+#endif // nk_has_builtin_(__builtin_sme_svluti2_lane_zt_u8)
 #endif // !defined(NK_TARGET_SMELUT2) || ...
 
-#if !defined(NK_TARGET_SMEFA64) || (NK_TARGET_SMEFA64 && !NK_TARGET_ARM_)
+// Compiling for Arm: NK_TARGET_SMEFA64 (FEAT_SME_FA64, full SVE2 in streaming mode)
+#if !defined(NK_TARGET_SMEFA64) || (NK_TARGET_SMEFA64 && !NK_TARGET_ARM64_)
+#if defined(__ARM_FEATURE_SME_FA64)
+#define NK_TARGET_SMEFA64 1
+#else
 #undef NK_TARGET_SMEFA64
 #define NK_TARGET_SMEFA64 0
-#endif
+#endif // defined(__ARM_FEATURE_SME_FA64)
+#endif // !defined(NK_TARGET_SMEFA64) || ...
 
 // Compiling for x86: NK_TARGET_HASWELL
 //
@@ -392,7 +515,7 @@
 //   - _MSC_VER >= 1900 (VS 2015+): AVX2/FMA/F16C (Haswell)
 //   - _MSC_VER >= 1920 (VS 2019+): AVX-512 base (Skylake, Icelake), AVX-VNNI (Alder)
 //   - _MSC_VER >= 1944 (VS 2022 17.14+): BF16, FP16, VP2INTERSECT, VNNI-INT8 (Sierra), AMX
-#if !defined(NK_TARGET_HASWELL) || (NK_TARGET_HASWELL && !NK_TARGET_X86_)
+#if !defined(NK_TARGET_HASWELL) || (NK_TARGET_HASWELL && !NK_TARGET_X8664_)
 #if (defined(__AVX2__) && defined(__FMA__) && defined(__F16C__)) || (defined(_MSC_VER) && _MSC_VER >= 1900)
 #define NK_TARGET_HASWELL 1
 #else
@@ -408,7 +531,7 @@
 //      gcc-12 -march=sapphirerapids -dM -E - < /dev/null | egrep "SSE|AVX" | sort
 // On Arm machines you may want to check for other flags:
 //      gcc-12 -march=native -dM -E - < /dev/null | egrep "NEON|SVE|FP16|FMA" | sort
-#if !defined(NK_TARGET_SKYLAKE) || (NK_TARGET_SKYLAKE && !NK_TARGET_X86_)
+#if !defined(NK_TARGET_SKYLAKE) || (NK_TARGET_SKYLAKE && !NK_TARGET_X8664_)
 #if (defined(__AVX512F__) && defined(__AVX512CD__) && defined(__AVX512VL__) && defined(__AVX512DQ__) && \
      defined(__AVX512BW__)) ||                                                                          \
     (defined(_MSC_VER) && _MSC_VER >= 1920)
@@ -419,7 +542,7 @@
 #endif
 #endif // !defined(NK_TARGET_SKYLAKE) || ...
 
-#if !defined(NK_TARGET_ICELAKE) || (NK_TARGET_ICELAKE && !NK_TARGET_X86_)
+#if !defined(NK_TARGET_ICELAKE) || (NK_TARGET_ICELAKE && !NK_TARGET_X8664_)
 #if (defined(__AVX512VNNI__) && defined(__AVX512IFMA__) && defined(__AVX512BITALG__) && defined(__AVX512VBMI__) && \
      defined(__AVX512VBMI2__) && defined(__AVX512VPOPCNTDQ__)) ||                                                  \
     (defined(_MSC_VER) && _MSC_VER >= 1920)
@@ -430,16 +553,29 @@
 #endif
 #endif // !defined(NK_TARGET_ICELAKE) || ...
 
-#if !defined(NK_TARGET_GENOA) || (NK_TARGET_GENOA && !NK_TARGET_X86_)
+#if !defined(NK_TARGET_GENOA) || (NK_TARGET_GENOA && !NK_TARGET_X8664_)
 #if defined(__AVX512BF16__) || (defined(_MSC_VER) && _MSC_VER >= 1944)
 #define NK_TARGET_GENOA 1
 #else
 #undef NK_TARGET_GENOA
 #define NK_TARGET_GENOA 0
-#endif
+#endif // defined(__AVX512BF16__) || ...
 #endif // !defined(NK_TARGET_GENOA) || ...
 
-#if !defined(NK_TARGET_SAPPHIRE) || (NK_TARGET_SAPPHIRE && !NK_TARGET_X86_)
+// Compiling for x86: NK_TARGET_DIAMOND (AVX10.2, Diamond Rapids)
+// GCC 14+: defines __AVX10_2__ with -mavx10.2-512
+// Clang 19+: defines __AVX10_2__ with -mavx10.2-512
+// MSVC: defines __AVX10_VER__ >= 2 with /arch:AVX10.2 (VS 2026+, not yet released)
+#if !defined(NK_TARGET_DIAMOND) || (NK_TARGET_DIAMOND && !NK_TARGET_X8664_)
+#if defined(__AVX10_2__) || (defined(__AVX10_VER__) && __AVX10_VER__ >= 2)
+#define NK_TARGET_DIAMOND 1
+#else
+#undef NK_TARGET_DIAMOND
+#define NK_TARGET_DIAMOND 0
+#endif // defined(__AVX10_2__) || ...
+#endif // !defined(NK_TARGET_DIAMOND) || ...
+
+#if !defined(NK_TARGET_SAPPHIRE) || (NK_TARGET_SAPPHIRE && !NK_TARGET_X8664_)
 #if defined(__AVX512FP16__) || (defined(_MSC_VER) && _MSC_VER >= 1944)
 #define NK_TARGET_SAPPHIRE 1
 #else
@@ -448,7 +584,7 @@
 #endif
 #endif // !defined(NK_TARGET_SAPPHIRE) || ...
 
-#if !defined(NK_TARGET_SAPPHIREAMX) || (NK_TARGET_SAPPHIREAMX && !NK_TARGET_X86_)
+#if !defined(NK_TARGET_SAPPHIREAMX) || (NK_TARGET_SAPPHIREAMX && !NK_TARGET_X8664_)
 #if (defined(__AMX_TILE__) && defined(__AMX_BF16__) && defined(__AMX_INT8__)) || (defined(_MSC_VER) && _MSC_VER >= 1944)
 #define NK_TARGET_SAPPHIREAMX 1
 #else
@@ -457,7 +593,7 @@
 #endif
 #endif // !defined(NK_TARGET_SAPPHIREAMX) || ...
 
-#if !defined(NK_TARGET_GRANITEAMX) || (NK_TARGET_GRANITEAMX && !NK_TARGET_X86_)
+#if !defined(NK_TARGET_GRANITEAMX) || (NK_TARGET_GRANITEAMX && !NK_TARGET_X8664_)
 #if (defined(__AMX_TILE__) && defined(__AMX_FP16__)) || (defined(_MSC_VER) && _MSC_VER >= 1944)
 #define NK_TARGET_GRANITEAMX 1
 #else
@@ -466,7 +602,7 @@
 #endif
 #endif // !defined(NK_TARGET_GRANITEAMX) || ...
 
-#if !defined(NK_TARGET_TURIN) || (NK_TARGET_TURIN && !NK_TARGET_X86_)
+#if !defined(NK_TARGET_TURIN) || (NK_TARGET_TURIN && !NK_TARGET_X8664_)
 #if defined(__AVX512VP2INTERSECT__) || (defined(_MSC_VER) && _MSC_VER >= 1944)
 #define NK_TARGET_TURIN 1
 #else
@@ -475,7 +611,7 @@
 #endif
 #endif // !defined(NK_TARGET_TURIN) || ...
 
-#if !defined(NK_TARGET_ALDER) || (NK_TARGET_ALDER && !NK_TARGET_X86_)
+#if !defined(NK_TARGET_ALDER) || (NK_TARGET_ALDER && !NK_TARGET_X8664_)
 #if defined(__AVXVNNI__) || (defined(_MSC_VER) && _MSC_VER >= 1920)
 #define NK_TARGET_ALDER 1
 #else
@@ -484,7 +620,7 @@
 #endif
 #endif // !defined(NK_TARGET_ALDER) || ...
 
-#if !defined(NK_TARGET_SIERRA) || (NK_TARGET_SIERRA && !NK_TARGET_X86_)
+#if !defined(NK_TARGET_SIERRA) || (NK_TARGET_SIERRA && !NK_TARGET_X8664_)
 #if defined(__AVXVNNIINT8__) || (defined(_MSC_VER) && _MSC_VER >= 1944)
 #define NK_TARGET_SIERRA 1
 #else
@@ -493,10 +629,10 @@
 #endif
 #endif // !defined(NK_TARGET_SIERRA) || ...
 
-// Include the relevant intrinsics file - different for different OSes and ISAs
+// Include the relevant intrinsics headers
 #if defined(_MSC_VER)
 #include <intrin.h>
-#elif NK_TARGET_ARM_
+#endif
 #if NK_TARGET_NEON
 #include <arm_neon.h>
 #endif
@@ -506,11 +642,20 @@
 #if NK_TARGET_SME || NK_TARGET_SME2 || NK_TARGET_SMEBI32
 #include <arm_sme.h>
 #endif
-#elif NK_TARGET_HASWELL || NK_TARGET_SKYLAKE
+#if NK_TARGET_HASWELL || NK_TARGET_SKYLAKE
 #include <immintrin.h>
-#elif NK_TARGET_RVV
+#endif
+#if NK_TARGET_RVV
 #include <riscv_vector.h>
-#elif NK_TARGET_V128RELAXED
+#endif
+#if NK_TARGET_LOONGSONASX
+#include <lsxintrin.h>  // `__m128i` for LSX SIMD
+#include <lasxintrin.h> // `__m256i` for LASX SIMD
+#endif
+#if NK_TARGET_POWERVSX
+#include <altivec.h>
+#endif
+#if NK_TARGET_V128RELAXED
 #include <wasm_simd128.h>
 #endif
 
@@ -519,11 +664,11 @@
 #endif
 
 #if !defined(NK_F32_DIVISION_EPSILON)
-#define NK_F32_DIVISION_EPSILON (1e-7)
+#define NK_F32_DIVISION_EPSILON (1e-7f)
 #endif
 
 #if !defined(NK_F16_DIVISION_EPSILON)
-#define NK_F16_DIVISION_EPSILON (1e-3)
+#define NK_F16_DIVISION_EPSILON (1e-3f)
 #endif
 
 /**
@@ -550,7 +695,7 @@
  *  NK_STREAMING_ marks functions that require streaming SVE mode (e.g. FCVTLT).
  *  NK_STREAMING_COMPATIBLE_ marks helpers callable from both streaming and non-streaming mode.
  */
-#if NK_TARGET_ARM_ && NK_TARGET_SME
+#if NK_TARGET_ARM64_ && NK_TARGET_SME
 #define NK_STREAMING_            __arm_streaming
 #define NK_STREAMING_COMPATIBLE_ __arm_streaming_compatible
 #else
@@ -563,7 +708,7 @@
  *          MSVC typedefs `__m512bh`, `__m512h`, `__m256bh` as aliases for `__m512i`/`__m256i`,
  *          but rejects C-style casts between them. GCC/Clang define them as distinct types.
  */
-#if NK_TARGET_X86_
+#if NK_TARGET_X8664_
 #if defined(_MSC_VER)
 #define nk_m512bh_from_m512i_(x) (x)
 #define nk_m512h_from_m512i_(x)  (x)
@@ -578,6 +723,27 @@
 #define nk_m256i_from_m256bh_(x) ((__m256i)(x))
 #endif
 #endif
+
+/*  AltiVec defines `bool`, `vector`, and `pixel` as macros, which conflict with C++.
+ *  We use `__vector` directly in our code, so undef the problematic macros.
+ */
+#if NK_TARGET_POWERVSX
+#ifdef __cplusplus
+#undef bool
+#undef vector
+#undef pixel
+#endif
+typedef __vector unsigned char nk_vu8x16_t;
+typedef __vector unsigned short nk_vu16x8_t;
+typedef __vector unsigned int nk_vu32x4_t;
+typedef __vector unsigned long long nk_vu64x2_t;
+typedef __vector signed char nk_vi8x16_t;
+typedef __vector signed short nk_vi16x8_t;
+typedef __vector signed int nk_vi32x4_t;
+typedef __vector signed long long nk_vi64x2_t;
+typedef __vector float nk_vf32x4_t;
+typedef __vector double nk_vf64x2_t;
+#endif // NK_TARGET_POWERVSX
 
 /** Copy 16 bits (2 bytes) from source to destination */
 #if defined(__GNUC__) || defined(__clang__)
@@ -635,10 +801,16 @@ typedef unsigned char nk_e4m3_t;
  *  122 of 248 finite values (49.2%) fall in [−1, +1]. */
 typedef unsigned char nk_e5m2_t;
 /** @brief 6-bit E2M3 micro-float (OCP MX v1.0): sign(1) + exponent(2) + mantissa(3), bias=1.
- *  Range: ±7.5, no infinities or NaN. Only 64 total codes; 18 (28.1%) fall in [−1, +1]. */
+ *  Stored as 0b00SEEMMM with 2 bits of padding. Range: ±7.5, no infinities or NaN.
+ *  64 total codes: 48 normal, 14 subnormal (exp=0, mant≠0), 2 zeros (±0).
+ *  18 of 64 values (28.1%) fall in [−1, +1]. Subnormal values span [±0.125, ±0.875].
+ *  Losslessly promotable to E4M3 by rebiasing exponent +6 (normals) or normalizing (subnormals). */
 typedef unsigned char nk_e2m3_t;
 /** @brief 6-bit E3M2 micro-float (OCP MX v1.0): sign(1) + exponent(3) + mantissa(2), bias=3.
- *  Range: ±28, supports infinities. Only 64 total codes; 26 (40.6%) fall in [−1, +1]. */
+ *  Stored as 0b00SEEEMM with 2 bits of padding. Range: ±28, no infinities or NaN.
+ *  64 total codes: 56 normal, 6 subnormal (exp=0, mant≠0), 2 zeros (±0).
+ *  26 of 64 values (40.6%) fall in [−1, +1]. Subnormal values span [±0.0625, ±0.1875].
+ *  Losslessly promotable to E5M2 by rebiasing exponent +12 (normals) or normalizing (subnormals). */
 typedef unsigned char nk_e3m2_t;
 
 /** @brief Signed 8-bit integer. Range: [−128, +127]. */
@@ -656,7 +828,7 @@ typedef unsigned int nk_u32_t;
 /*  On LP64 targets (Linux ARM64, RISC-V 64), `long` and `long long` are both 64-bit but distinct types.
  *  NEON/RVV intrinsics on Linux expect `long*`, while Apple's NEON intrinsics expect `long long*`.
  *  Windows uses LLP64 where `long` is 32-bit, so it must use `long long` for 64-bit types. */
-#if ((NK_TARGET_ARM_ && !defined(NK_DEFINED_APPLE_)) || NK_TARGET_RISCV_) && !defined(NK_DEFINED_WINDOWS_)
+#if ((NK_TARGET_ARM64_ && !defined(NK_DEFINED_APPLE_)) || NK_TARGET_RISCV64_) && !defined(NK_DEFINED_WINDOWS_)
 /** @brief Signed 64-bit integer. Range: [−2⁶³, +2⁶³−1]. */
 typedef signed long nk_i64_t;
 /** @brief Unsigned 64-bit integer. Range: [0, 2⁶⁴−1]. */
@@ -673,7 +845,7 @@ typedef float nk_f32_t;
 /** @brief Double-precision (64-bit) IEEE 754 float. sign(1) + exponent(11) + mantissa(52), bias=1023. */
 typedef double nk_f64_t;
 
-#if NK_TARGET_X86_ || NK_TARGET_ARM_ || NK_TARGET_RISCV_
+#if NK_TARGET_X8664_ || NK_TARGET_ARM64_ || NK_TARGET_RISCV64_ || NK_TARGET_POWER64_ || NK_TARGET_LOONGARCH64_
 #define NK_IS_64BIT_ 1
 #else
 #define NK_IS_64BIT_ 0
@@ -715,11 +887,17 @@ typedef nk_f64_t nk_fmax_t;
 #define NK_U8_MAX 255U
 #define NK_U8_MIN 0x0U
 
-#define NK_F16_MAX 0x7BFF // IEEE 754 binary16: +65504.0
-#define NK_F16_MIN 0xFBFF // IEEE 754 binary16: -65504.0
+#define NK_F16_MAX_AS_U16 0x7BFF // IEEE 754 binary16: +65504.0
+#define NK_F16_MIN_AS_U16 0xFBFF // IEEE 754 binary16: -65504.0
 
-#define NK_BF16_MAX 0x7F7F // BFloat16: ~+3.39e38
-#define NK_BF16_MIN 0xFF7F // BFloat16: ~-3.39e38
+#define NK_F16_MAX nk_u16_as_f16_(0x7BFF)
+#define NK_F16_MIN nk_u16_as_f16_(0xFBFF)
+
+#define NK_BF16_MAX_AS_U16 0x7F7F // BFloat16: ~+3.39e38
+#define NK_BF16_MIN_AS_U16 0xFF7F // BFloat16: ~-3.39e38
+
+#define NK_BF16_MAX nk_u16_as_bf16_(0x7F7F)
+#define NK_BF16_MIN nk_u16_as_bf16_(0xFF7F)
 
 #define NK_E4M3_MAX 0x7E // FP8 E4M3: +448.0
 #define NK_E4M3_MIN 0xFE // FP8 E4M3: -448.0
@@ -845,7 +1023,7 @@ NK_PUBLIC nk_size_t nk_dtype_bits(nk_dtype_t dtype) {
 /** @brief Returns how many logical dimensions are packed into one storage value.
  *  For sub-byte types multiple dimensions share a single byte container.
  *  For byte-or-larger types this is always 1. */
-NK_PUBLIC nk_size_t nk_dtype_dimensions_per_value(nk_dtype_t dtype) {
+NK_PUBLIC nk_size_t nk_dimensions_per_value(nk_dtype_t dtype) {
     switch (dtype) {
     case nk_u1_k: return 8;
     case nk_i4_k: return 2;
@@ -934,7 +1112,7 @@ typedef unsigned short nk_bf16_t;
  *  Some of those are defined as aliases, so we use `#define` preprocessor
  *  directives instead of `typedef` to avoid errors.
  */
-#if NK_TARGET_ARM_
+#if NK_TARGET_ARM64_
 #if defined(_MSC_VER)
 #define nk_f16_for_arm_simd_t  nk_f16_t
 #define nk_bf16_for_arm_simd_t nk_bf16_t
@@ -948,7 +1126,7 @@ typedef unsigned short nk_bf16_t;
  *  RISC-V Vector (RVV) intrinsics use `_Float16` for half-precision floats.
  *  This is the standard C23 type, also available in GCC/Clang with RVV extensions.
  */
-#if NK_TARGET_RISCV_
+#if NK_TARGET_RISCV64_
 #define nk_f16_for_rvv_intrinsics_t _Float16
 #endif
 
@@ -978,7 +1156,7 @@ NK_STATIC_ASSERT(sizeof(nk_bf16_t) == 2, nk_bf16_t_must_be_2_bytes);
 #define nk_assign_from_to_(src, dest) (*(dest) = *(src))
 
 /** @brief 16-bit union for f16/bf16/u16/i16 bit manipulation. */
-typedef union {
+typedef union NK_MAY_ALIAS_ {
     nk_u16_t u;
     nk_i16_t i;
     nk_f16_t f;
@@ -986,14 +1164,14 @@ typedef union {
 } nk_fui16_t;
 
 /** @brief 32-bit union for f32/u32/i32 bit manipulation. */
-typedef union {
+typedef union NK_MAY_ALIAS_ {
     nk_u32_t u;
     nk_i32_t i;
     nk_f32_t f;
 } nk_fui32_t;
 
 /** @brief 64-bit union for f64/u64/i64 bit manipulation. */
-typedef union {
+typedef union NK_MAY_ALIAS_ {
     nk_u64_t u;
     nk_i64_t i;
     nk_f64_t f;
@@ -1024,7 +1202,7 @@ typedef struct {
 } nk_f64c_t;
 
 /** @brief  Small 4-byte memory slice viewable as different types. */
-typedef union nk_b32_vec_t {
+typedef union NK_MAY_ALIAS_ nk_b32_vec_t {
     nk_u32_t u32;
     nk_i32_t i32;
     nk_f32_t f32;
@@ -1037,7 +1215,7 @@ typedef union nk_b32_vec_t {
 } nk_b32_vec_t;
 
 /** @brief  Small 8-byte memory slice viewable as different types. */
-typedef union nk_b64_vec_t {
+typedef union NK_MAY_ALIAS_ nk_b64_vec_t {
 #if NK_TARGET_NEON
     uint8x8_t u8x8;
     uint16x4_t u16x4;
@@ -1064,8 +1242,8 @@ typedef union nk_b64_vec_t {
 } nk_b64_vec_t;
 
 /** @brief  Small 16-byte memory slice viewable as different types. */
-typedef union nk_b128_vec_t {
-#if NK_TARGET_HASWELL
+typedef union NK_MAY_ALIAS_ nk_b128_vec_t {
+#if NK_TARGET_HASWELL || NK_TARGET_LOONGSONASX
     __m128i xmm;
     __m128d xmm_pd;
     __m128 xmm_ps;
@@ -1083,8 +1261,26 @@ typedef union nk_b128_vec_t {
     int32x4_t i32x4;
     int64x2_t i64x2;
     float32x4_t f32x4;
+#endif
+#if NK_TARGET_NEON && NK_TARGET_ARM64_ // double-precision NEON requires AArch64
     float64x2_t f64x2;
 #endif
+#if NK_TARGET_NEONHALF
+    float16x8_t f16x8;
+#endif
+#if NK_TARGET_POWERVSX
+    nk_vu8x16_t vu8x16;
+    nk_vu16x8_t vu16x8;
+    nk_vu32x4_t vu32x4;
+    nk_vu64x2_t vu64x2;
+    nk_vi8x16_t vi8x16;
+    nk_vi16x8_t vi16x8;
+    nk_vi32x4_t vi32x4;
+    nk_vi64x2_t vi64x2;
+    nk_vf32x4_t vf32x4;
+    nk_vf64x2_t vf64x2;
+#endif
+
     nk_u8_t u8s[16];
     nk_u16_t u16s[8];
     nk_u32_t u32s[4];
@@ -1104,8 +1300,8 @@ typedef union nk_b128_vec_t {
 } nk_b128_vec_t;
 
 /** @brief  Small 32-byte memory slice viewable as different types. */
-typedef union nk_b256_vec_t {
-#if NK_TARGET_HASWELL
+typedef union NK_MAY_ALIAS_ nk_b256_vec_t {
+#if NK_TARGET_HASWELL || NK_TARGET_LOONGSONASX
     __m256i ymm;
     __m256d ymm_pd;
     __m256 ymm_ps;
@@ -1124,8 +1320,23 @@ typedef union nk_b256_vec_t {
     int32x4_t i32x4s[2];
     int64x2_t i64x2s[2];
     float32x4_t f32x4s[2];
+#endif
+#if NK_TARGET_NEON && NK_TARGET_ARM64_ // double-precision NEON requires AArch64
     float64x2_t f64x2s[2];
 #endif
+#if NK_TARGET_POWERVSX
+    nk_vu8x16_t vu8x16s[2];
+    nk_vu16x8_t vu16x8s[2];
+    nk_vu32x4_t vu32x4s[2];
+    nk_vu64x2_t vu64x2s[2];
+    nk_vi8x16_t vi8x16s[2];
+    nk_vi16x8_t vi16x8s[2];
+    nk_vi32x4_t vi32x4s[2];
+    nk_vi64x2_t vi64x2s[2];
+    nk_vf32x4_t vf32x4s[2];
+    nk_vf64x2_t vf64x2s[2];
+#endif
+
     nk_u8_t u8s[32];
     nk_u16_t u16s[16];
     nk_u32_t u32s[8];
@@ -1151,7 +1362,7 @@ typedef union nk_b256_vec_t {
  *  of this is that the argument of such type is passed to functions using the calling convention of the first
  *  member of the union, which in our case is a register-based calling convention for SIMD types.
  */
-typedef union nk_b512_vec_t {
+typedef union NK_MAY_ALIAS_ nk_b512_vec_t {
 #if NK_TARGET_SKYLAKE
     __m512i zmm;
     __m512d zmm_pd;
@@ -1356,16 +1567,27 @@ NK_INTERNAL nk_i8_t nk_i4x2_get_(nk_i4x2_t byte_val, int n) {
 /** @brief Extract bit at position n (0-7) from packed u1x8 byte. */
 NK_INTERNAL nk_u8_t nk_u1x8_get_(nk_u1x8_t byte_val, int n) { return (byte_val >> (n & 7)) & 1; }
 
-NK_INTERNAL nk_f16_t nk_f16_from_u16_(nk_u16_t bits) {
+NK_INTERNAL nk_f16_t nk_u16_as_f16_(nk_u16_t bits) {
     nk_fui16_t c;
     c.u = bits;
     return c.f;
 }
-NK_INTERNAL nk_bf16_t nk_bf16_from_u16_(nk_u16_t bits) {
+NK_INTERNAL nk_u16_t nk_f16_as_u16_(nk_f16_t x) {
+    nk_fui16_t c;
+    c.f = x;
+    return c.u;
+}
+NK_INTERNAL nk_bf16_t nk_u16_as_bf16_(nk_u16_t bits) {
     nk_fui16_t c;
     c.u = bits;
     return c.bf;
 }
+
+NK_INTERNAL void nk_f64_from_i64_(nk_i64_t const *src, nk_f64_t *dest) { *dest = (nk_f64_t)*src; }
+NK_INTERNAL void nk_f64_from_u64_(nk_u64_t const *src, nk_f64_t *dest) { *dest = (nk_f64_t)*src; }
+NK_INTERNAL void nk_f32_from_i32_(nk_i32_t const *src, nk_f32_t *dest) { *dest = (nk_f32_t)*src; }
+NK_INTERNAL void nk_f32_from_u32_(nk_u32_t const *src, nk_f32_t *dest) { *dest = (nk_f32_t)*src; }
+NK_INTERNAL void nk_f32_from_f64_(nk_f64_t const *src, nk_f32_t *dest) { *dest = (nk_f32_t)*src; }
 
 /** @brief E4M3: NaN when (raw & 0x7F) == 0x7F  (two NaN values: 0x7F, 0xFF). */
 NK_INTERNAL int nk_e4m3_is_nan_(nk_e4m3_t x) { return (x & 0x7F) == 0x7F; }
@@ -1375,10 +1597,18 @@ NK_INTERNAL int nk_e4m3_is_nan_(nk_e4m3_t x) { return (x & 0x7F) == 0x7F; }
 NK_INTERNAL int nk_e5m2_is_nan_(nk_e5m2_t x) { return (x & 0x7F) > 0x7C; }
 
 /** @brief F16: NaN when (raw & 0x7FFF) > 0x7C00. */
-NK_INTERNAL int nk_f16_is_nan_(nk_u16_t x) { return (x & 0x7FFF) > 0x7C00; }
+NK_INTERNAL int nk_f16_is_nan_(nk_f16_t x) {
+    nk_fui16_t x_fui;
+    x_fui.f = x;
+    return (x_fui.u & 0x7FFF) > 0x7C00;
+}
 
 /** @brief BF16: NaN when (raw & 0x7FFF) > 0x7F80. */
-NK_INTERNAL int nk_bf16_is_nan_(nk_u16_t x) { return (x & 0x7FFF) > 0x7F80; }
+NK_INTERNAL int nk_bf16_is_nan_(nk_bf16_t x) {
+    nk_fui16_t x_fui;
+    x_fui.bf = x;
+    return (x_fui.u & 0x7FFF) > 0x7F80;
+}
 
 /*  Safe SVE vector-length queries usable from non-streaming context.
  *  On Apple M4 (and other SME-only-SVE cores), SVE instructions like CNTW/CNTH/CNTB
@@ -1386,7 +1616,7 @@ NK_INTERNAL int nk_bf16_is_nan_(nk_u16_t x) { return (x & 0x7FFF) > 0x7F80; }
  *  SMSTART SM / SMSTOP SM so the calling function's ABI is unchanged.
  *  Inside `__arm_locally_streaming` functions the plain `svcntXX()` intrinsics are fine.
  */
-#if NK_TARGET_ARM_ && NK_TARGET_SME
+#if NK_TARGET_ARM64_ && NK_TARGET_SME
 /** @brief Streaming SVL byte-element count (SVL/8) via SMSTART SM bracket. */
 NK_INTERNAL nk_size_t nk_sme_cntb_(void) {
     nk_u64_t r;
@@ -1410,6 +1640,51 @@ NK_INTERNAL nk_size_t nk_sme_cntd_(void) {
     nk_u64_t r;
     __asm__ __volatile__("smstart sm\n\t" "cntd %0\n\t" "smstop sm" : "=r"(r));
     return (nk_size_t)r;
+}
+
+/** @brief Enter streaming SVE mode (PSTATE.SM = 1). Caller is responsible for smstop. */
+NK_INTERNAL void nk_sme_start_streaming_(void) { __asm__ __volatile__("smstart sm" ::: "memory"); }
+/** @brief Exit streaming SVE mode (PSTATE.SM = 0). Must pair with nk_sme_start_streaming_. */
+NK_INTERNAL void nk_sme_stop_streaming_(void) { __asm__ __volatile__("smstop sm" ::: "memory"); }
+
+/**
+ *  SME runtime stubs — weak definitions for symbols the compiler may reference
+ *  from __arm_streaming or __arm_new("za") functions. Every TU that includes
+ *  this header emits a weak copy; the linker deduplicates to one.
+ *
+ *  - __arm_tpidr2_save / __arm_tpidr2_restore: lazy ZA save/restore protocol
+ *    used in __arm_new("za") prologues. Always no-ops in NumKong because no
+ *    NK_PUBLIC function carries ZA state (TPIDR2_EL0 is always null at entry).
+ *
+ *  - __arm_sc_memset / __arm_sc_memcpy / __arm_sc_memmove: streaming-compatible
+ *    memory routines the compiler may emit inside __arm_streaming functions.
+ *    Apple Clang provides these in its runtime; upstream LLVM does not.
+ */
+__attribute__((weak)) void __arm_tpidr2_save(void) {}
+__attribute__((weak)) void __arm_tpidr2_restore(void *blk) { nk_unused_(blk); }
+__attribute__((weak, target("+sme"))) void *__arm_sc_memset(void *d, int c, __SIZE_TYPE__ n) __arm_streaming_compatible {
+    unsigned char *p = (unsigned char *)d;
+    for (__SIZE_TYPE__ i = 0; i < n; i++) p[i] = (unsigned char)c;
+    return d;
+}
+__attribute__((weak, target("+sme"))) void *__arm_sc_memcpy(void *d, void const *s,
+                                                           __SIZE_TYPE__ n) __arm_streaming_compatible {
+    unsigned char *dp = (unsigned char *)d;
+    unsigned char const *sp = (unsigned char const *)s;
+    for (__SIZE_TYPE__ i = 0; i < n; i++) dp[i] = sp[i];
+    return d;
+}
+__attribute__((weak, target("+sme"))) void *__arm_sc_memmove(void *d, void const *s,
+                                                            __SIZE_TYPE__ n) __arm_streaming_compatible {
+    unsigned char *dp = (unsigned char *)d;
+    unsigned char const *sp = (unsigned char const *)s;
+    if (dp < sp) {
+        for (__SIZE_TYPE__ i = 0; i < n; i++) dp[i] = sp[i];
+    }
+    else {
+        for (__SIZE_TYPE__ i = n; i > 0; i--) dp[i - 1] = sp[i - 1];
+    }
+    return d;
 }
 #endif
 

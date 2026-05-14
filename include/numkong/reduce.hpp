@@ -217,7 +217,70 @@ void reduce_minmax(vector_view<in_type_> input, minmax_type_ *min_value, std::si
 
 namespace ashvardanian::numkong {
 
-#pragma region - Tensor Reduction Helpers
+#pragma region Tensor Reduction Helpers
+
+/** @brief Result of detecting how many trailing dimensions form a single arithmetic progression. */
+struct uniform_stride_tail_result_t_ {
+    std::size_t tail_dims;     ///< Number of collapsible trailing dimensions.
+    std::size_t element_count; ///< Product of collapsed extents.
+    std::size_t stride_bytes;  ///< Absolute stride of the innermost collapsed dimension.
+};
+
+/** @brief Detect trailing dimensions where stride[i] == stride[i+1] * extent[i+1].
+ *  When this holds, the tail is a single strided sequence and can be passed to a SIMD
+ *  kernel in one call with (element_count, stride_bytes). */
+template <typename value_type_, std::size_t max_rank_>
+uniform_stride_tail_result_t_ uniform_stride_tail_(tensor_view<value_type_, max_rank_> input) noexcept {
+    if constexpr (dimensions_per_value<value_type_>() > 1) return {0, 0, 0};
+    auto rank = input.rank();
+    if (rank == 0) return {0, 1, sizeof(value_type_)};
+    std::size_t tail = 1;
+    auto innermost_stride = input.stride_bytes(rank - 1);
+    auto expected_stride = innermost_stride;
+    for (std::size_t i = rank - 1; i > 0; --i) {
+        expected_stride *= static_cast<std::ptrdiff_t>(input.extent(i));
+        if (input.stride_bytes(i - 1) != expected_stride) break;
+        ++tail;
+    }
+    std::size_t count = 1;
+    for (std::size_t i = rank - tail; i < rank; ++i) count *= input.extent(i);
+    return {tail, count, static_cast<std::size_t>(innermost_stride < 0 ? -innermost_stride : innermost_stride)};
+}
+
+/** @brief Collapse the trailing `tail.tail_dims` dimensions into one, preserving outer dims and strides. */
+template <typename value_type_, std::size_t max_rank_>
+tensor_view<value_type_, max_rank_> collapse_uniform_tail_(tensor_view<value_type_, max_rank_> input,
+                                                           uniform_stride_tail_result_t_ const &tail) noexcept {
+    shape_storage_<max_rank_> s;
+    s.rank = input.rank() - tail.tail_dims + 1;
+    for (std::size_t i = 0; i + tail.tail_dims < input.rank(); ++i) {
+        s.extents[i] = input.extent(i);
+        s.strides[i] = input.stride_bytes(i);
+    }
+    s.extents[s.rank - 1] = tail.element_count;
+    s.strides[s.rank - 1] = input.stride_bytes(input.rank() - 1);
+    return {input.byte_data(), s};
+}
+
+/** @brief Normalize a fully-collapsed tail for SIMD kernel consumption, handling negative strides. */
+template <typename value_type_, std::size_t max_rank_>
+normalized_rank1_lane_<value_type_, max_rank_> normalize_rank1_lane_from_tail_(
+    tensor_view<value_type_, max_rank_> input, uniform_stride_tail_result_t_ const &tail) noexcept {
+    normalized_rank1_lane_<value_type_, max_rank_> lane;
+    lane.count = tail.element_count;
+    lane.stride_bytes = tail.stride_bytes;
+    auto innermost_stride = input.stride_bytes(input.rank() - 1);
+    if (innermost_stride >= 0) {
+        lane.data = input.data();
+        lane.reversed = false;
+    }
+    else {
+        lane.data = reinterpret_cast<value_type_ const *>(
+            input.byte_data() + static_cast<std::ptrdiff_t>(lane.count - 1) * innermost_stride);
+        lane.reversed = true;
+    }
+    return lane;
+}
 
 template <numeric_dtype value_type_, std::size_t max_rank_>
 bool reduce_rank1_moments_(tensor_view<value_type_, max_rank_> input, typename value_type_::reduce_moments_sum_t &sum,
@@ -410,9 +473,9 @@ bool reduce_minmax_axis_packed_(tensor_view<value_type_, max_rank_> input, std::
     return true;
 }
 
-#pragma endregion - Tensor Reduction Helpers
+#pragma endregion Tensor Reduction Helpers
 
-#pragma region - Scalar Reductions
+#pragma region Scalar Reductions
 
 /** @brief Compute Σxᵢ and Σxᵢ² in a single pass. Returns zeroed result for empty tensors. */
 template <numeric_dtype value_type_, std::size_t max_rank_ = 8>
@@ -422,11 +485,14 @@ moments_result<typename value_type_::reduce_moments_sum_t, typename value_type_:
     using sumsq_t = typename value_type_::reduce_moments_sumsq_t;
     moments_result<sum_t, sumsq_t> result {};
     if (input.empty() || input.numel() == 0 || !tensor_layout_supported_(input)) return result;
-    if (input.is_contiguous()) {
-        numkong::reduce_moments<value_type_>(input.data(), input.numel(), sizeof(value_type_), &result.sum,
-                                             &result.sumsq);
+    auto tail = uniform_stride_tail_(input);
+    if (tail.tail_dims == input.rank()) {
+        auto lane = normalize_rank1_lane_from_tail_<value_type_, max_rank_>(input, tail);
+        numkong::reduce_moments<value_type_>(lane.data, lane.count, lane.stride_bytes, &result.sum, &result.sumsq);
         return result;
     }
+    if (tail.tail_dims >= 2) return moments<value_type_, max_rank_>(collapse_uniform_tail_(input, tail));
+    // Sub-byte rank-1 fallback: uniform_stride_tail_ returns {0,0,0} for packed types.
     if (input.rank() == 1) {
         reduce_rank1_moments_(input, result.sum, result.sumsq);
         return result;
@@ -445,11 +511,19 @@ minmax_result<typename value_type_::reduce_minmax_value_t> minmax(tensor_view<va
     using minmax_t = typename value_type_::reduce_minmax_value_t;
     minmax_result<minmax_t> result {};
     if (input.empty() || input.numel() == 0 || !tensor_layout_supported_(input)) return result;
-    if (input.is_contiguous()) {
-        numkong::reduce_minmax<value_type_>(input.data(), input.numel(), sizeof(value_type_), &result.min_value,
+    auto tail = uniform_stride_tail_(input);
+    if (tail.tail_dims == input.rank()) {
+        auto lane = normalize_rank1_lane_from_tail_<value_type_, max_rank_>(input, tail);
+        numkong::reduce_minmax<value_type_>(lane.data, lane.count, lane.stride_bytes, &result.min_value,
                                             &result.min_index, &result.max_value, &result.max_index);
+        if (lane.reversed) {
+            result.min_index = tail.element_count - 1 - result.min_index;
+            result.max_index = tail.element_count - 1 - result.max_index;
+        }
         return result;
     }
+    if (tail.tail_dims >= 2) return minmax<value_type_, max_rank_>(collapse_uniform_tail_(input, tail));
+    // Sub-byte rank-1 fallback.
     if (input.rank() == 1) {
         reduce_rank1_minmax_(input, result);
         return result;
@@ -555,9 +629,9 @@ std::size_t argmax(vector_view<value_type_> input) noexcept {
     return minmax(input).max_index;
 }
 
-#pragma endregion - Scalar Reductions
+#pragma endregion Scalar Reductions
 
-#pragma region - Axis Reductions
+#pragma region Axis Reductions
 
 /** @brief Σ along a single axis. Returns empty tensor on failure. */
 template <numeric_dtype value_type_, std::size_t max_rank_ = 8,
@@ -697,7 +771,7 @@ tensor<typename value_type_::reduce_minmax_value_t, allocator_type_, max_rank_> 
     return try_minmax<value_type_, max_rank_, allocator_type_>(input, axis, keep_dims).max_value;
 }
 
-#pragma endregion - Axis Reductions
+#pragma endregion Axis Reductions
 
 } // namespace ashvardanian::numkong
 

@@ -4,6 +4,10 @@ on:
   pull_request:
     branches: ["main", "main-*"]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -17,7 +21,7 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-      - name: Print machine specs
+      - name: Print Machine Specs
         shell: bash
         run: |
           echo "::group::Machine Information"
@@ -34,7 +38,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-      - name: Print machine specs
+      - name: Set Up Swift
+        uses: swift-actions/setup-swift@v3
+        with:
+          swift-version: "6.1"
+      - name: Print Machine Specs
         shell: bash
         run: |
           echo "::group::Machine Information"

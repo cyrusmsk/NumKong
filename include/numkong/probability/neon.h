@@ -9,7 +9,7 @@
 #ifndef NK_PROBABILITY_NEON_H
 #define NK_PROBABILITY_NEON_H
 
-#if NK_TARGET_ARM_
+#if NK_TARGET_ARM64_
 
 #include "numkong/types.h"
 #include "numkong/cast/serial.h"  // `nk_partial_load_b16x4_serial_`, `nk_partial_load_b32x4_serial_`
@@ -57,8 +57,8 @@ NK_PUBLIC float32x4_t nk_log2_f32x4_neon_(float32x4_t x) {
 NK_PUBLIC void nk_kld_f32_neon(nk_f32_t const *a, nk_f32_t const *b, nk_size_t n, nk_f64_t *result) {
     nk_f32_t epsilon = NK_F32_DIVISION_EPSILON;
     float32x4_t epsilon_f32x4 = vdupq_n_f32(epsilon);
-    float64x2_t sum_lower_f64x2 = vdupq_n_f64(0.0);
-    float64x2_t sum_upper_f64x2 = vdupq_n_f64(0.0);
+    float64x2_t sum_low_f64x2 = vdupq_n_f64(0.0);
+    float64x2_t sum_high_f64x2 = vdupq_n_f64(0.0);
     float32x4_t a_f32x4, b_f32x4;
 
 nk_kld_f32_neon_cycle:
@@ -79,20 +79,20 @@ nk_kld_f32_neon_cycle:
     float32x4_t ratio_f32x4 = vdivq_f32(vaddq_f32(a_f32x4, epsilon_f32x4), vaddq_f32(b_f32x4, epsilon_f32x4));
     float32x4_t log_ratio_f32x4 = nk_log2_f32x4_neon_(ratio_f32x4);
     float32x4_t contribution_f32x4 = vmulq_f32(a_f32x4, log_ratio_f32x4);
-    sum_lower_f64x2 = vaddq_f64(sum_lower_f64x2, vcvt_f64_f32(vget_low_f32(contribution_f32x4)));
-    sum_upper_f64x2 = vaddq_f64(sum_upper_f64x2, vcvt_f64_f32(vget_high_f32(contribution_f32x4)));
+    sum_low_f64x2 = vaddq_f64(sum_low_f64x2, vcvt_f64_f32(vget_low_f32(contribution_f32x4)));
+    sum_high_f64x2 = vaddq_f64(sum_high_f64x2, vcvt_high_f64_f32(contribution_f32x4));
     if (n != 0) goto nk_kld_f32_neon_cycle;
 
     nk_f64_t log2_normalizer = 0.6931471805599453;
-    nk_f64_t sum = vaddvq_f64(vaddq_f64(sum_lower_f64x2, sum_upper_f64x2)) * log2_normalizer;
+    nk_f64_t sum = vaddvq_f64(vaddq_f64(sum_low_f64x2, sum_high_f64x2)) * log2_normalizer;
     *result = sum;
 }
 
 NK_PUBLIC void nk_jsd_f32_neon(nk_f32_t const *a, nk_f32_t const *b, nk_size_t n, nk_f64_t *result) {
     nk_f32_t epsilon = NK_F32_DIVISION_EPSILON;
     float32x4_t epsilon_f32x4 = vdupq_n_f32(epsilon);
-    float64x2_t sum_lower_f64x2 = vdupq_n_f64(0.0);
-    float64x2_t sum_upper_f64x2 = vdupq_n_f64(0.0);
+    float64x2_t sum_low_f64x2 = vdupq_n_f64(0.0);
+    float64x2_t sum_high_f64x2 = vdupq_n_f64(0.0);
     float32x4_t a_f32x4, b_f32x4;
 
 nk_jsd_f32_neon_cycle:
@@ -118,12 +118,12 @@ nk_jsd_f32_neon_cycle:
     float32x4_t contribution_a_f32x4 = vmulq_f32(a_f32x4, log_ratio_a_f32x4);
     float32x4_t contribution_b_f32x4 = vmulq_f32(b_f32x4, log_ratio_b_f32x4);
     float32x4_t contribution_f32x4 = vaddq_f32(contribution_a_f32x4, contribution_b_f32x4);
-    sum_lower_f64x2 = vaddq_f64(sum_lower_f64x2, vcvt_f64_f32(vget_low_f32(contribution_f32x4)));
-    sum_upper_f64x2 = vaddq_f64(sum_upper_f64x2, vcvt_f64_f32(vget_high_f32(contribution_f32x4)));
+    sum_low_f64x2 = vaddq_f64(sum_low_f64x2, vcvt_f64_f32(vget_low_f32(contribution_f32x4)));
+    sum_high_f64x2 = vaddq_f64(sum_high_f64x2, vcvt_high_f64_f32(contribution_f32x4));
     if (n != 0) goto nk_jsd_f32_neon_cycle;
 
     nk_f64_t log2_normalizer = 0.6931471805599453;
-    nk_f64_t sum = vaddvq_f64(vaddq_f64(sum_lower_f64x2, sum_upper_f64x2)) * log2_normalizer / 2.0;
+    nk_f64_t sum = vaddvq_f64(vaddq_f64(sum_low_f64x2, sum_high_f64x2)) * log2_normalizer / 2.0;
     *result = sum > 0 ? nk_f64_sqrt_neon(sum) : 0;
 }
 
@@ -134,76 +134,106 @@ nk_jsd_f32_neon_cycle:
 #endif
 #endif // NK_TARGET_NEON
 
-#if NK_TARGET_NEONHALF
+#if NK_TARGET_NEON
 #if defined(__clang__)
-#pragma clang attribute push(__attribute__((target("arch=armv8.2-a+simd+fp16"))), apply_to = function)
+#pragma clang attribute push(__attribute__((target("arch=armv8.2-a+simd"))), apply_to = function)
 #elif defined(__GNUC__)
 #pragma GCC push_options
-#pragma GCC target("arch=armv8.2-a+simd+fp16")
+#pragma GCC target("arch=armv8.2-a+simd")
 #endif
 
-NK_PUBLIC void nk_kld_f16_neonhalf(nk_f16_t const *a, nk_f16_t const *b, nk_size_t n, nk_f32_t *result) {
+NK_PUBLIC void nk_kld_f16_neon(nk_f16_t const *a, nk_f16_t const *b, nk_size_t n, nk_f32_t *result) {
     float32x4_t sum_f32x4 = vdupq_n_f32(0);
     nk_f32_t epsilon = NK_F32_DIVISION_EPSILON;
     float32x4_t epsilon_f32x4 = vdupq_n_f32(epsilon);
-    float32x4_t a_f32x4, b_f32x4;
+    float32x4_t a_low_f32x4, a_high_f32x4, b_low_f32x4, b_high_f32x4;
 
-nk_kld_f16_neonhalf_cycle:
-    if (n < 4) {
-        nk_b64_vec_t a_vec, b_vec;
-        nk_partial_load_b16x4_serial_(a, &a_vec, n);
-        nk_partial_load_b16x4_serial_(b, &b_vec, n);
-        a_f32x4 = vcvt_f32_f16(vreinterpret_f16_u16(a_vec.u16x4));
-        b_f32x4 = vcvt_f32_f16(vreinterpret_f16_u16(b_vec.u16x4));
+nk_kld_f16_neon_cycle:
+    if (n < 8) {
+        nk_b128_vec_t a_vec, b_vec;
+        nk_partial_load_b16x8_serial_(a, &a_vec, n);
+        nk_partial_load_b16x8_serial_(b, &b_vec, n);
+        float16x8_t a_f16x8 = vreinterpretq_f16_u16(a_vec.u16x8);
+        float16x8_t b_f16x8 = vreinterpretq_f16_u16(b_vec.u16x8);
+        a_low_f32x4 = vcvt_f32_f16(vget_low_f16(a_f16x8));
+        a_high_f32x4 = vcvt_high_f32_f16(a_f16x8);
+        b_low_f32x4 = vcvt_f32_f16(vget_low_f16(b_f16x8));
+        b_high_f32x4 = vcvt_high_f32_f16(b_f16x8);
         n = 0;
     }
     else {
-        a_f32x4 = vcvt_f32_f16(vld1_f16((nk_f16_for_arm_simd_t const *)a));
-        b_f32x4 = vcvt_f32_f16(vld1_f16((nk_f16_for_arm_simd_t const *)b));
-        n -= 4, a += 4, b += 4;
+        float16x8_t a_f16x8 = vreinterpretq_f16_u16(vld1q_u16((nk_u16_t const *)a));
+        float16x8_t b_f16x8 = vreinterpretq_f16_u16(vld1q_u16((nk_u16_t const *)b));
+        a_low_f32x4 = vcvt_f32_f16(vget_low_f16(a_f16x8));
+        a_high_f32x4 = vcvt_high_f32_f16(a_f16x8);
+        b_low_f32x4 = vcvt_f32_f16(vget_low_f16(b_f16x8));
+        b_high_f32x4 = vcvt_high_f32_f16(b_f16x8);
+        n -= 8, a += 8, b += 8;
     }
 
-    float32x4_t ratio_f32x4 = vdivq_f32(vaddq_f32(a_f32x4, epsilon_f32x4), vaddq_f32(b_f32x4, epsilon_f32x4));
-    float32x4_t log_ratio_f32x4 = nk_log2_f32x4_neon_(ratio_f32x4);
-    float32x4_t contribution_f32x4 = vmulq_f32(a_f32x4, log_ratio_f32x4);
-    sum_f32x4 = vaddq_f32(sum_f32x4, contribution_f32x4);
-    if (n) goto nk_kld_f16_neonhalf_cycle;
+    float32x4_t ratio_low_f32x4 = vdivq_f32(vaddq_f32(a_low_f32x4, epsilon_f32x4),
+                                            vaddq_f32(b_low_f32x4, epsilon_f32x4));
+    float32x4_t ratio_high_f32x4 = vdivq_f32(vaddq_f32(a_high_f32x4, epsilon_f32x4),
+                                             vaddq_f32(b_high_f32x4, epsilon_f32x4));
+    float32x4_t log_ratio_low_f32x4 = nk_log2_f32x4_neon_(ratio_low_f32x4);
+    float32x4_t log_ratio_high_f32x4 = nk_log2_f32x4_neon_(ratio_high_f32x4);
+    sum_f32x4 = vfmaq_f32(sum_f32x4, a_low_f32x4, log_ratio_low_f32x4);
+    sum_f32x4 = vfmaq_f32(sum_f32x4, a_high_f32x4, log_ratio_high_f32x4);
+    if (n) goto nk_kld_f16_neon_cycle;
 
     nk_f32_t log2_normalizer = 0.693147181f;
     nk_f32_t sum = vaddvq_f32(sum_f32x4) * log2_normalizer;
     *result = sum;
 }
 
-NK_PUBLIC void nk_jsd_f16_neonhalf(nk_f16_t const *a, nk_f16_t const *b, nk_size_t n, nk_f32_t *result) {
+NK_PUBLIC void nk_jsd_f16_neon(nk_f16_t const *a, nk_f16_t const *b, nk_size_t n, nk_f32_t *result) {
     float32x4_t sum_f32x4 = vdupq_n_f32(0);
     nk_f32_t epsilon = NK_F32_DIVISION_EPSILON;
     float32x4_t epsilon_f32x4 = vdupq_n_f32(epsilon);
-    float32x4_t a_f32x4, b_f32x4;
+    float32x4_t a_low_f32x4, a_high_f32x4, b_low_f32x4, b_high_f32x4;
 
-nk_jsd_f16_neonhalf_cycle:
-    if (n < 4) {
-        nk_b64_vec_t a_vec, b_vec;
-        nk_partial_load_b16x4_serial_(a, &a_vec, n);
-        nk_partial_load_b16x4_serial_(b, &b_vec, n);
-        a_f32x4 = vcvt_f32_f16(vreinterpret_f16_u16(a_vec.u16x4));
-        b_f32x4 = vcvt_f32_f16(vreinterpret_f16_u16(b_vec.u16x4));
+nk_jsd_f16_neon_cycle:
+    if (n < 8) {
+        nk_b128_vec_t a_vec, b_vec;
+        nk_partial_load_b16x8_serial_(a, &a_vec, n);
+        nk_partial_load_b16x8_serial_(b, &b_vec, n);
+        float16x8_t a_f16x8 = vreinterpretq_f16_u16(a_vec.u16x8);
+        float16x8_t b_f16x8 = vreinterpretq_f16_u16(b_vec.u16x8);
+        a_low_f32x4 = vcvt_f32_f16(vget_low_f16(a_f16x8));
+        a_high_f32x4 = vcvt_high_f32_f16(a_f16x8);
+        b_low_f32x4 = vcvt_f32_f16(vget_low_f16(b_f16x8));
+        b_high_f32x4 = vcvt_high_f32_f16(b_f16x8);
         n = 0;
     }
     else {
-        a_f32x4 = vcvt_f32_f16(vld1_f16((nk_f16_for_arm_simd_t const *)a));
-        b_f32x4 = vcvt_f32_f16(vld1_f16((nk_f16_for_arm_simd_t const *)b));
-        n -= 4, a += 4, b += 4;
+        float16x8_t a_f16x8 = vreinterpretq_f16_u16(vld1q_u16((nk_u16_t const *)a));
+        float16x8_t b_f16x8 = vreinterpretq_f16_u16(vld1q_u16((nk_u16_t const *)b));
+        a_low_f32x4 = vcvt_f32_f16(vget_low_f16(a_f16x8));
+        a_high_f32x4 = vcvt_high_f32_f16(a_f16x8);
+        b_low_f32x4 = vcvt_f32_f16(vget_low_f16(b_f16x8));
+        b_high_f32x4 = vcvt_high_f32_f16(b_f16x8);
+        n -= 8, a += 8, b += 8;
     }
 
-    float32x4_t mean_f32x4 = vmulq_n_f32(vaddq_f32(a_f32x4, b_f32x4), 0.5f);
-    float32x4_t ratio_a_f32x4 = vdivq_f32(vaddq_f32(a_f32x4, epsilon_f32x4), vaddq_f32(mean_f32x4, epsilon_f32x4));
-    float32x4_t ratio_b_f32x4 = vdivq_f32(vaddq_f32(b_f32x4, epsilon_f32x4), vaddq_f32(mean_f32x4, epsilon_f32x4));
-    float32x4_t log_ratio_a_f32x4 = nk_log2_f32x4_neon_(ratio_a_f32x4);
-    float32x4_t log_ratio_b_f32x4 = nk_log2_f32x4_neon_(ratio_b_f32x4);
-    float32x4_t contribution_a_f32x4 = vmulq_f32(a_f32x4, log_ratio_a_f32x4);
-    float32x4_t contribution_b_f32x4 = vmulq_f32(b_f32x4, log_ratio_b_f32x4);
-    sum_f32x4 = vaddq_f32(sum_f32x4, vaddq_f32(contribution_a_f32x4, contribution_b_f32x4));
-    if (n) goto nk_jsd_f16_neonhalf_cycle;
+    float32x4_t mean_low_f32x4 = vmulq_n_f32(vaddq_f32(a_low_f32x4, b_low_f32x4), 0.5f);
+    float32x4_t mean_high_f32x4 = vmulq_n_f32(vaddq_f32(a_high_f32x4, b_high_f32x4), 0.5f);
+    float32x4_t ratio_a_low_f32x4 = vdivq_f32(vaddq_f32(a_low_f32x4, epsilon_f32x4),
+                                              vaddq_f32(mean_low_f32x4, epsilon_f32x4));
+    float32x4_t ratio_a_high_f32x4 = vdivq_f32(vaddq_f32(a_high_f32x4, epsilon_f32x4),
+                                               vaddq_f32(mean_high_f32x4, epsilon_f32x4));
+    float32x4_t ratio_b_low_f32x4 = vdivq_f32(vaddq_f32(b_low_f32x4, epsilon_f32x4),
+                                              vaddq_f32(mean_low_f32x4, epsilon_f32x4));
+    float32x4_t ratio_b_high_f32x4 = vdivq_f32(vaddq_f32(b_high_f32x4, epsilon_f32x4),
+                                               vaddq_f32(mean_high_f32x4, epsilon_f32x4));
+    float32x4_t log_ratio_a_low_f32x4 = nk_log2_f32x4_neon_(ratio_a_low_f32x4);
+    float32x4_t log_ratio_a_high_f32x4 = nk_log2_f32x4_neon_(ratio_a_high_f32x4);
+    float32x4_t log_ratio_b_low_f32x4 = nk_log2_f32x4_neon_(ratio_b_low_f32x4);
+    float32x4_t log_ratio_b_high_f32x4 = nk_log2_f32x4_neon_(ratio_b_high_f32x4);
+    sum_f32x4 = vfmaq_f32(sum_f32x4, a_low_f32x4, log_ratio_a_low_f32x4);
+    sum_f32x4 = vfmaq_f32(sum_f32x4, a_high_f32x4, log_ratio_a_high_f32x4);
+    sum_f32x4 = vfmaq_f32(sum_f32x4, b_low_f32x4, log_ratio_b_low_f32x4);
+    sum_f32x4 = vfmaq_f32(sum_f32x4, b_high_f32x4, log_ratio_b_high_f32x4);
+    if (n) goto nk_jsd_f16_neon_cycle;
 
     nk_f32_t log2_normalizer = 0.693147181f;
     nk_f32_t sum = vaddvq_f32(sum_f32x4) * log2_normalizer / 2;
@@ -215,11 +245,11 @@ nk_jsd_f16_neonhalf_cycle:
 #elif defined(__GNUC__)
 #pragma GCC pop_options
 #endif
-#endif // NK_TARGET_NEONHALF
+#endif // NK_TARGET_NEON
 
 #if defined(__cplusplus)
 } // extern "C"
 #endif
 
-#endif // NK_TARGET_ARM_
+#endif // NK_TARGET_ARM64_
 #endif // NK_PROBABILITY_NEON_H

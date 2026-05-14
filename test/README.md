@@ -126,7 +126,7 @@ cmake --build build-wasi --parallel
 __Running WASM Tests__
 
 ```sh
-wasmtime --wasm-features simd128 ./build-wasi/nk_test.wasm
+wasmtime run -W simd=y,relaxed-simd=y,threads=y,shared-memory=y -S threads=y,inherit-env=y ./build-wasi/nk_test.wasm
 wasmer run --enable-simd --enable-relaxed-simd ./build-wasi/nk_test.wasm
 node ./build-wasm/nk_test.js
 ```
@@ -226,18 +226,18 @@ cargo test -p numkong --features wasm-runtime -- wasm_runtime
 
 ```sh
 pip install -e .
-pip install pytest pytest-repeat tabulate numpy scipy ml_dtypes
+pip install pytest pytest-repeat pytest-randomly numpy scipy ml_dtypes tabulate
 pytest test/ -s -x -Wd
 ```
 
 Optional dependencies for extended test coverage:
 
-| Package     | What it unlocks                                   |
-| ----------- | ------------------------------------------------- |
-| `numpy`     | Array interop, cdist, custom dtype registration   |
-| `scipy`     | Cross-validation against `scipy.spatial.distance` |
+| Package     | What it unlocks                                         |
+| ----------- | ------------------------------------------------------- |
+| `numpy`     | Array interop, cdist, custom dtype registration         |
+| `scipy`     | Cross-validation against `scipy.spatial.distance`       |
 | `ml_dtypes` | `__array_interface__` fallback for bfloat16 / fp8 / fp6 |
-| `tabulate`  | Formatted precision report tables                 |
+| `tabulate`  | Formatted precision report tables                       |
 
 Tests that require a missing optional dependency are skipped automatically.
 

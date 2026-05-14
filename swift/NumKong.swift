@@ -155,7 +155,7 @@ extension Float32: NumKongVincenty {
     }
 }
 
-// MARK: - Sequence-Based Geospatial Extensions
+// MARK: - Geospatial Sequence Extensions
 
 extension Float64 {
     @inlinable @inline(__always)
@@ -201,7 +201,7 @@ extension Float32 {
     }
 }
 
-// MARK: - Geospatial Free Functions
+// MARK: - Geospatial Functions
 
 @inlinable @inline(__always)
 public func haversine<A: Sequence>(
@@ -276,4 +276,8 @@ public enum Capabilities {
     public static let rvvBB: UInt64 = 1 << 33
     public static let sierra: UInt64 = 1 << 34
     public static let smeBi32: UInt64 = 1 << 35
+    public static let loongsonAsx: UInt64 = 1 << 36
+    public static let powerVsx: UInt64 = 1 << 37
+    public static let diamond: UInt64 = 1 << 38
+    public static let neonFp8: UInt64 = 1 << 39
 }

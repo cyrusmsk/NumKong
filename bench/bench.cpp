@@ -60,10 +60,29 @@ static void print_indicator(bool on) {
     else std::printf(colors_enabled() ? "\033[2m\xe2\x97\x8b\033[0m" : "\xe2\x97\x8b");
 }
 
-static void print_isa(char const *name, int compiled, nk_capability_t cap, nk_capability_t runtime) {
-    if (!compiled) return;
+/**
+ *  Tri-state glyph for "compiled in" vs "runtime supports":
+ *    ● compiled & runtime usable kernel    — green
+ *    ◐ compiled but runtime lacks it       — red (invoking this kernel will SIGILL)
+ *    ◑ runtime has it but not compiled in  — yellow (perf left on the table)
+ *    ○ neither                             — dim
+ */
+static void print_indicator_dual(bool compiled, bool runtime) {
+    char const *glyph;
+    char const *color;
+    if (compiled && runtime) glyph = "\xe2\x97\x8f", color = "\033[32m";
+    else if (compiled && !runtime) glyph = "\xe2\x97\x90", color = "\033[31m";
+    else if (!compiled && runtime) glyph = "\xe2\x97\x91", color = "\033[33m";
+    else glyph = "\xe2\x97\x8b", color = "\033[2m";
+    if (colors_enabled()) std::printf("%s%s\033[0m", color, glyph);
+    else std::printf("%s", glyph);
+}
+
+static void print_isa(char const *name, int compiled, nk_capability_t cap, nk_capability_t runtime_caps) {
+    bool const runtime = (runtime_caps & cap) != 0;
+    if (!compiled && !runtime) return;
     std::printf("  %s ", name);
-    print_indicator((runtime & cap) != 0);
+    print_indicator_dual(compiled != 0, runtime);
 }
 
 bench_config_t bench_config;
@@ -145,21 +164,23 @@ int main(int argc, char **argv) {
     std::printf("  ISA:");
     // x86
     print_isa("Haswell", NK_TARGET_HASWELL, nk_cap_haswell_k, runtime_caps);
+    print_isa("Alder", NK_TARGET_ALDER, nk_cap_alder_k, runtime_caps);
+    print_isa("Sierra", NK_TARGET_SIERRA, nk_cap_sierra_k, runtime_caps);
     print_isa("Skylake", NK_TARGET_SKYLAKE, nk_cap_skylake_k, runtime_caps);
     print_isa("Ice Lake", NK_TARGET_ICELAKE, nk_cap_icelake_k, runtime_caps);
     print_isa("Genoa", NK_TARGET_GENOA, nk_cap_genoa_k, runtime_caps);
+    print_isa("Turin", NK_TARGET_TURIN, nk_cap_turin_k, runtime_caps);
     print_isa("Sapphire", NK_TARGET_SAPPHIRE, nk_cap_sapphire_k, runtime_caps);
     print_isa("Sapphire AMX", NK_TARGET_SAPPHIREAMX, nk_cap_sapphireamx_k, runtime_caps);
     print_isa("Granite AMX", NK_TARGET_GRANITEAMX, nk_cap_graniteamx_k, runtime_caps);
-    print_isa("Turin", NK_TARGET_TURIN, nk_cap_turin_k, runtime_caps);
-    print_isa("Alder", NK_TARGET_ALDER, nk_cap_alder_k, runtime_caps);
-    print_isa("Sierra", NK_TARGET_SIERRA, nk_cap_sierra_k, runtime_caps);
+    print_isa("Diamond", NK_TARGET_DIAMOND, nk_cap_diamond_k, runtime_caps);
     // Arm
     print_isa("NEON", NK_TARGET_NEON, nk_cap_neon_k, runtime_caps);
     print_isa("NEON F16", NK_TARGET_NEONHALF, nk_cap_neonhalf_k, runtime_caps);
     print_isa("NEON BF16", NK_TARGET_NEONBFDOT, nk_cap_neonbfdot_k, runtime_caps);
     print_isa("NEON I8", NK_TARGET_NEONSDOT, nk_cap_neonsdot_k, runtime_caps);
     print_isa("NEON FHM", NK_TARGET_NEONFHM, nk_cap_neonfhm_k, runtime_caps);
+    print_isa("NEON FP8", NK_TARGET_NEONFP8, nk_cap_neonfp8_k, runtime_caps);
     print_isa("SVE", NK_TARGET_SVE, nk_cap_sve_k, runtime_caps);
     print_isa("SVE F16", NK_TARGET_SVEHALF, nk_cap_svehalf_k, runtime_caps);
     print_isa("SVE BF16", NK_TARGET_SVEBFDOT, nk_cap_svebfdot_k, runtime_caps);
@@ -180,6 +201,10 @@ int main(int argc, char **argv) {
     print_isa("RVV HALF", NK_TARGET_RVVHALF, nk_cap_rvvhalf_k, runtime_caps);
     print_isa("RVV BF16", NK_TARGET_RVVBF16, nk_cap_rvvbf16_k, runtime_caps);
     print_isa("RVV BB", NK_TARGET_RVVBB, nk_cap_rvvbb_k, runtime_caps);
+    // LoongArch
+    print_isa("LoongArch LASX", NK_TARGET_LOONGSONASX, nk_cap_loongsonasx_k, runtime_caps);
+    // Power
+    print_isa("Power VSX", NK_TARGET_POWERVSX, nk_cap_powervsx_k, runtime_caps);
     // WASM
     print_isa("V128 Relaxed", NK_TARGET_V128RELAXED, nk_cap_v128relaxed_k, runtime_caps);
     std::printf("\n");
@@ -309,7 +334,9 @@ int main(int argc, char **argv) {
     bench_cross_sme();
     bench_cross_blas();
     bench_cross_rvv();
+    bench_cross_power();
     bench_cross_wasm();
+    bench_cross_loongarch();
 
     bm::RunSpecifiedBenchmarks();
     bm::Shutdown();

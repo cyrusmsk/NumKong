@@ -72,6 +72,8 @@ Int8 data is quad-interleaved: [a₀, a₁, a₂, a₃, a₀, a₁, a₂, a₃, 
 Tile configuration via `LDTILECFG` sets row counts and column byte-widths per tile — allows undersized tiles at matrix edges without masking.
 Morton Z-curve ordering for tile traversal improves cache reuse when both A and B exceed L2.
 This eliminates the explicit M×N×K loop nesting and register file pressure of vector ISAs — the entire dot-product reduction happens inside the tile instruction.
+FP8 inputs on Sapphire AMX go through an on-the-fly E4M3/E5M2 → BF16 pack via the Ice Lake `VPERMI2W` LUT helpers — port-5-bound but the simplest correct route to feed `TDPBF16PS` tiles.
+Granite Rapids adds `TDPFP16PS` (same tile shape, FP16 operands); the E5M2 variant widens inputs with a single `VPUNPCK*BW` against zero into FP16 tiles at pack time and then reuses the native FP16 compute loop — keeps the intermediate at FP16 precision instead of truncating to BF16 like the Sapphire path.
 
 ### SME Outer-Product Streaming
 
@@ -142,85 +144,83 @@ Workloads that significantly degrade CPU frequencies (Intel AMX, Apple SME) run 
 | `dots_packed_f64_with_blas` 🧩        |       58.7 gso/s, 16 ulp |       73.1 gso/s, 58 ulp |     73.8 gso/s, 56.2 ulp |
 | `dots_packed_f64_with_mkl` 🧩         |       59.9 gso/s, 16 ulp |       73.7 gso/s, 58 ulp |     73.3 gso/s, 56.2 ulp |
 | `dots_symmetric_f64_with_blas` 🧩     |       50.8 gso/s, 13 ulp |       70.4 gso/s, 30 ulp |       74 gso/s, 50.8 ulp |
-| `nk_dots_packed_f64_serial`          |       0.393 gso/s, 2 ulp |     0.489 gso/s, 4.6 ulp |     0.488 gso/s, 5.9 ulp |
-| `nk_dots_symmetric_f64_serial`       |       0.346 gso/s, 2 ulp |     0.357 gso/s, 2.9 ulp |     0.574 gso/s, 3.9 ulp |
-| `nk_dots_packed_f64_haswell`         |        5.56 gso/s, 0 ulp |        5.97 gso/s, 0 ulp |        6.15 gso/s, 0 ulp |
-| `nk_dots_symmetric_f64_haswell`      |         5.1 gso/s, 0 ulp |        5.71 gso/s, 0 ulp |        11.5 gso/s, 0 ulp |
-| `nk_dots_packed_f64_skylake`         |        8.05 gso/s, 0 ulp |        8.69 gso/s, 0 ulp |        8.93 gso/s, 0 ulp |
-| `nk_dots_symmetric_f64_skylake`      |        7.52 gso/s, 0 ulp |        8.88 gso/s, 0 ulp |        17.6 gso/s, 0 ulp |
+| `nk_dots_packed_f64_serial`          |       0.850 gso/s, 2 ulp |     0.846 gso/s, 4.6 ulp |     0.862 gso/s, 5.9 ulp |
+| `nk_dots_symmetric_f64_serial`       |       0.484 gso/s, 2 ulp |     0.472 gso/s, 2.9 ulp |     0.471 gso/s, 3.9 ulp |
+| `nk_dots_packed_f64_haswell`         |        5.93 gso/s, 0 ulp |        6.11 gso/s, 0 ulp |        6.16 gso/s, 0 ulp |
+| `nk_dots_symmetric_f64_haswell`      |        5.68 gso/s, 0 ulp |        5.99 gso/s, 0 ulp |        5.86 gso/s, 0 ulp |
+| `nk_dots_packed_f64_skylake`         |        8.26 gso/s, 0 ulp |        9.27 gso/s, 0 ulp |        9.06 gso/s, 0 ulp |
+| `nk_dots_symmetric_f64_skylake`      |        7.53 gso/s, 0 ulp |        8.63 gso/s, 0 ulp |        8.58 gso/s, 0 ulp |
 | __f32__                              | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
 | `dots_packed_f32_with_blas` 🧩        |        113 gso/s, 18 ulp |        139 gso/s, 30 ulp |       147 gso/s, 267 ulp |
 | `dots_symmetric_f32_with_blas` 🧩     |       94.5 gso/s, 23 ulp |        126 gso/s, 39 ulp |       146 gso/s, 260 ulp |
-| `nk_dots_packed_f32_serial`          |      9.89 gso/s, 5.3 ulp |     10.2 gso/s, 11.8 ulp |        10.1 gso/s, ? ulp |
-| `nk_dots_symmetric_f32_serial`       |     6.30 gso/s, 11.1 ulp |     6.57 gso/s, 13.4 ulp |        6.53 gso/s, ? ulp |
-| `nk_dots_packed_f32_haswell`         |        30.1 gso/s, 0 ulp |        31.6 gso/s, 0 ulp |        31.9 gso/s, 0 ulp |
-| `nk_dots_symmetric_f32_haswell`      |        21.4 gso/s, 0 ulp |        26.2 gso/s, 0 ulp |        53.3 gso/s, 0 ulp |
-| `nk_dots_packed_f32_skylake`         |          35 gso/s, 0 ulp |        38.6 gso/s, 0 ulp |        39.5 gso/s, 0 ulp |
-| `nk_dots_symmetric_f32_skylake`      |        26.6 gso/s, 0 ulp |        30.5 gso/s, 0 ulp |          62 gso/s, 0 ulp |
+| `nk_dots_packed_f32_serial`          |      9.98 gso/s, 5.3 ulp |     10.1 gso/s, 11.8 ulp |     10.1 gso/s, 14.5 ulp |
+| `nk_dots_symmetric_f32_serial`       |     4.96 gso/s, 11.1 ulp |     5.01 gso/s, 13.4 ulp |     5.01 gso/s, 14.1 ulp |
+| `nk_dots_packed_f32_haswell`         |        30.4 gso/s, 0 ulp |        32.5 gso/s, 0 ulp |        31.9 gso/s, 0 ulp |
+| `nk_dots_symmetric_f32_haswell`      |        15.5 gso/s, 0 ulp |        17.9 gso/s, 0 ulp |        18.4 gso/s, 0 ulp |
+| `nk_dots_packed_f32_skylake`         |        35.4 gso/s, 0 ulp |        41.4 gso/s, 0 ulp |        40.0 gso/s, 0 ulp |
+| `nk_dots_symmetric_f32_skylake`      |        22.4 gso/s, 0 ulp |        28.2 gso/s, 0 ulp |        28.1 gso/s, 0 ulp |
 | __bf16__                             | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
-| `dots_packed_bf16_with_mkl` 🧩        |         190 gso/s, 0 ulp |       531 gso/s, 0.7 ulp |       865 gso/s, 5.8 ulp |
-| `nk_dots_packed_bf16_serial`         |       0.842 gso/s, 0 ulp |     0.824 gso/s, 0.5 ulp |     0.825 gso/s, 5.4 ulp |
-| `nk_dots_symmetric_bf16_serial`      |       0.808 gso/s, 0 ulp |     0.759 gso/s, 0.9 ulp |      1.74 gso/s, 5.4 ulp |
-| `nk_dots_packed_bf16_haswell`        |        57.4 gso/s, 0 ulp |      66.5 gso/s, 0.4 ulp |      67.1 gso/s, 4.5 ulp |
-| `nk_dots_symmetric_bf16_haswell`     |        39.5 gso/s, 0 ulp |      50.8 gso/s, 0.3 ulp |       111 gso/s, 4.2 ulp |
-| `nk_dots_packed_bf16_skylake`        |        73.8 gso/s, 0 ulp |      90.1 gso/s, 0.3 ulp |        90 gso/s, 3.7 ulp |
-| `nk_dots_symmetric_bf16_skylake`     |        52.7 gso/s, 0 ulp |      58.5 gso/s, 0.3 ulp |       127 gso/s, 3.2 ulp |
-| `nk_dots_packed_bf16_genoa`          |        64.1 gso/s, 0 ulp |      85.3 gso/s, 0.3 ulp |      90.3 gso/s, 3.5 ulp |
-| `nk_dots_symmetric_bf16_genoa`       |        58.1 gso/s, 0 ulp |      61.3 gso/s, 0.5 ulp |       133 gso/s, 3.5 ulp |
-| `nk_dots_packed_bf16_sapphireamx`    |         391 gso/s, 0 ulp |       531 gso/s, 0.7 ulp |       604 gso/s, 5.8 ulp |
-| `nk_dots_symmetric_bf16_sapphireamx` |        81.6 gso/s, 0 ulp |       120 gso/s, 0.5 ulp |       124 gso/s, 5.8 ulp |
+| `dots_packed_bf16_with_mkl` 🧩        |         182 gso/s, 0 ulp |       523 gso/s, 0.7 ulp |       847 gso/s, 5.8 ulp |
+| `nk_dots_packed_bf16_serial`         |        1.20 gso/s, 0 ulp |      1.21 gso/s, 0.5 ulp |      1.22 gso/s, 5.4 ulp |
+| `nk_dots_symmetric_bf16_serial`      |        1.16 gso/s, 0 ulp |      1.19 gso/s, 0.9 ulp |      1.18 gso/s, 5.4 ulp |
+| `nk_dots_packed_bf16_haswell`        |        65.6 gso/s, 0 ulp |      73.3 gso/s, 0.3 ulp |      76.8 gso/s, 4.4 ulp |
+| `nk_dots_symmetric_bf16_haswell`     |        40.2 gso/s, 0 ulp |      55.6 gso/s, 0.5 ulp |      60.8 gso/s, 4.6 ulp |
+| `nk_dots_packed_bf16_skylake`        |        79.8 gso/s, 0 ulp |      92.1 gso/s, 0.3 ulp |       102 gso/s, 3.5 ulp |
+| `nk_dots_symmetric_bf16_skylake`     |        57.4 gso/s, 0 ulp |      78.9 gso/s, 0.5 ulp |      82.5 gso/s, 3.5 ulp |
+| `nk_dots_packed_bf16_genoa`          |        65.8 gso/s, 0 ulp |      83.2 gso/s, 0.3 ulp |      88.9 gso/s, 3.5 ulp |
+| `nk_dots_symmetric_bf16_genoa`       |        52.5 gso/s, 0 ulp |      70.5 gso/s, 0.5 ulp |      76.0 gso/s, 3.5 ulp |
+| `nk_dots_packed_bf16_sapphireamx`    |         348 gso/s, 0 ulp |       706 gso/s, 0.7 ulp |       667 gso/s, 5.8 ulp |
+| `nk_dots_symmetric_bf16_sapphireamx` |        84.2 gso/s, 0 ulp |       120 gso/s, 0.5 ulp |       120 gso/s, 5.8 ulp |
 | __f16__                              | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
 | `dots_packed_f16_with_mkl` 🧩         |        123 gso/s, 17 ulp |        138 gso/s, 31 ulp |      138 gso/s, 39.5 ulp |
-| `nk_dots_packed_f16_serial`          |       4.44 gso/s, 14 ulp |       4.42 gso/s, 40 ulp |      4.40 gso/s, 326 ulp |
-| `nk_dots_symmetric_f16_serial`       |      3.66 gso/s, 8.9 ulp |       3.44 gso/s, 25 ulp |     5.06 gso/s, 55.6 ulp |
-| `nk_dots_packed_f16_haswell`         |       63.4 gso/s, 12 ulp |       72.4 gso/s, 22 ulp |      71.8 gso/s, 374 ulp |
-| `nk_dots_symmetric_f16_haswell`      |      39.9 gso/s, 7.7 ulp |       55.7 gso/s, 32 ulp |       127 gso/s, 486 ulp |
-| `nk_dots_packed_f16_skylake`         |      74.3 gso/s, 7.3 ulp |       98.7 gso/s, 21 ulp |      85.4 gso/s, 138 ulp |
-| `nk_dots_symmetric_f16_skylake`      |        53 gso/s, 5.9 ulp |       59.3 gso/s, 25 ulp |        133 gso/s, 32 ulp |
+| `nk_dots_packed_f16_serial`          |       8.19 gso/s, 14 ulp |       8.21 gso/s, 40 ulp |      8.11 gso/s, 326 ulp |
+| `nk_dots_symmetric_f16_serial`       |      4.02 gso/s, 8.9 ulp |       4.04 gso/s, 25 ulp |     4.03 gso/s, 55.6 ulp |
+| `nk_dots_packed_f16_haswell`         |       65.1 gso/s, 12 ulp |       74.4 gso/s, 22 ulp |      71.5 gso/s, 374 ulp |
+| `nk_dots_symmetric_f16_haswell`      |      34.4 gso/s, 7.7 ulp |       44.0 gso/s, 32 ulp |      46.5 gso/s, 486 ulp |
+| `nk_dots_packed_f16_skylake`         |      74.7 gso/s, 7.3 ulp |       99.0 gso/s, 21 ulp |      94.0 gso/s, 138 ulp |
+| `nk_dots_symmetric_f16_skylake`      |      40.9 gso/s, 5.9 ulp |       56.8 gso/s, 25 ulp |       58.8 gso/s, 32 ulp |
 | __e5m2__                             | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
-| `nk_dots_packed_e5m2_serial`         |        2.51 gso/s, 0 ulp |        2.57 gso/s, 0 ulp |        4.82 gso/s, 0 ulp |
-| `nk_dots_symmetric_e5m2_serial`      |        2.47 gso/s, 0 ulp |        2.54 gso/s, 0 ulp |        5.06 gso/s, 0 ulp |
-| `nk_dots_packed_e5m2_haswell`        |        28.7 gso/s, 0 ulp |        31.6 gso/s, 0 ulp |        30.6 gso/s, 0 ulp |
-| `nk_dots_symmetric_e5m2_haswell`     |        15.1 gso/s, 0 ulp |        15.4 gso/s, 0 ulp |        32.1 gso/s, 0 ulp |
-| `nk_dots_packed_e5m2_skylake`        |        33.7 gso/s, 0 ulp |        37.3 gso/s, 0 ulp |        39.3 gso/s, 0 ulp |
-| `nk_dots_symmetric_e5m2_skylake`     |        20.7 gso/s, 0 ulp |        20.8 gso/s, 0 ulp |        42.8 gso/s, 0 ulp |
-| `nk_dots_packed_e5m2_genoa`          |        43.4 gso/s, 0 ulp |        49.9 gso/s, 0 ulp |        50.8 gso/s, 0 ulp |
-| `nk_dots_symmetric_e5m2_genoa`       |        31.6 gso/s, 0 ulp |        33.2 gso/s, 0 ulp |        65.4 gso/s, 0 ulp |
-| `nk_dots_packed_e5m2_sapphireamx`    |         255 gso/s, 0 ulp |         380 gso/s, 0 ulp |         433 gso/s, 0 ulp |
+| `nk_dots_packed_e5m2_serial`         |        4.86 gso/s, 0 ulp |        4.75 gso/s, 0 ulp |        4.88 gso/s, 0 ulp |
+| `nk_dots_symmetric_e5m2_serial`      |        3.97 gso/s, 0 ulp |        4.28 gso/s, 0 ulp |        4.50 gso/s, 0 ulp |
+| `nk_dots_packed_e5m2_haswell`        |        29.1 gso/s, 0 ulp |        31.5 gso/s, 0 ulp |        30.6 gso/s, 0 ulp |
+| `nk_dots_symmetric_e5m2_haswell`     |        15.6 gso/s, 0 ulp |        16.4 gso/s, 0 ulp |        17.0 gso/s, 0 ulp |
+| `nk_dots_packed_e5m2_skylake`        |        34.6 gso/s, 0 ulp |        37.9 gso/s, 0 ulp |        38.9 gso/s, 0 ulp |
+| `nk_dots_symmetric_e5m2_skylake`     |        21.2 gso/s, 0 ulp |        22.7 gso/s, 0 ulp |        22.5 gso/s, 0 ulp |
+| `nk_dots_packed_e5m2_genoa`          |        41.7 gso/s, 0 ulp |        48.7 gso/s, 0 ulp |        49.1 gso/s, 0 ulp |
+| `nk_dots_symmetric_e5m2_genoa`       |        30.0 gso/s, 0 ulp |        33.3 gso/s, 0 ulp |        33.7 gso/s, 0 ulp |
+| `nk_dots_packed_e5m2_sapphireamx`    |         254 gso/s, 0 ulp |         407 gso/s, 0 ulp |         419 gso/s, 0 ulp |
+| `nk_dots_symmetric_e5m2_sapphireamx` |        50.9 gso/s, 0 ulp |        69.9 gso/s, 0 ulp |        67.4 gso/s, 0 ulp |
 | __e4m3__                             | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
-| `nk_dots_packed_e4m3_serial`         |       0.326 gso/s, 0 ulp |       0.334 gso/s, 0 ulp |       0.318 gso/s, 0 ulp |
-| `nk_dots_symmetric_e4m3_serial`      |       0.307 gso/s, 0 ulp |       0.315 gso/s, 0 ulp |       0.618 gso/s, 0 ulp |
-| `nk_dots_packed_e4m3_haswell`        |        19.4 gso/s, 0 ulp |        22.7 gso/s, 0 ulp |        21.9 gso/s, 0 ulp |
-| `nk_dots_symmetric_e4m3_haswell`     |        11.3 gso/s, 0 ulp |        11.9 gso/s, 0 ulp |        24.4 gso/s, 0 ulp |
-| `nk_dots_packed_e4m3_skylake`        |        30.8 gso/s, 0 ulp |        32.8 gso/s, 0 ulp |        31.2 gso/s, 0 ulp |
-| `nk_dots_symmetric_e4m3_skylake`     |        16.5 gso/s, 0 ulp |        17.4 gso/s, 0 ulp |        34.1 gso/s, 0 ulp |
-| `nk_dots_packed_e4m3_genoa`          |        43.8 gso/s, 0 ulp |        47.7 gso/s, 0 ulp |        49.3 gso/s, 0 ulp |
-| `nk_dots_symmetric_e4m3_genoa`       |        29.4 gso/s, 0 ulp |        33.3 gso/s, 0 ulp |        67.7 gso/s, 0 ulp |
-| `nk_dots_packed_e4m3_sapphireamx`    |         255 gso/s, 0 ulp |         401 gso/s, 0 ulp |         433 gso/s, 0 ulp |
+| `nk_dots_packed_e4m3_serial`         |       0.489 gso/s, 0 ulp |       0.499 gso/s, 0 ulp |       0.489 gso/s, 0 ulp |
+| `nk_dots_symmetric_e4m3_serial`      |       0.394 gso/s, 0 ulp |       0.390 gso/s, 0 ulp |       0.391 gso/s, 0 ulp |
+| `nk_dots_packed_e4m3_haswell`        |        24.3 gso/s, 0 ulp |        26.1 gso/s, 0 ulp |        25.2 gso/s, 0 ulp |
+| `nk_dots_symmetric_e4m3_haswell`     |        13.5 gso/s, 0 ulp |        14.0 gso/s, 0 ulp |        14.3 gso/s, 0 ulp |
+| `nk_dots_packed_e4m3_skylake`        |        31.6 gso/s, 0 ulp |        32.6 gso/s, 0 ulp |        34.0 gso/s, 0 ulp |
+| `nk_dots_symmetric_e4m3_skylake`     |        17.3 gso/s, 0 ulp |        18.2 gso/s, 0 ulp |        18.6 gso/s, 0 ulp |
+| `nk_dots_packed_e4m3_genoa`          |        38.6 gso/s, 0 ulp |        43.8 gso/s, 0 ulp |        43.7 gso/s, 0 ulp |
+| `nk_dots_symmetric_e4m3_genoa`       |        27.3 gso/s, 0 ulp |        29.4 gso/s, 0 ulp |        29.2 gso/s, 0 ulp |
+| `nk_dots_packed_e4m3_sapphireamx`    |         222 gso/s, 0 ulp |         333 gso/s, 0 ulp |         332 gso/s, 0 ulp |
+| `nk_dots_symmetric_e4m3_sapphireamx` |        33.1 gso/s, 0 ulp |        36.3 gso/s, 0 ulp |        35.4 gso/s, 0 ulp |
 | __e3m2__                             | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
-| `nk_dots_packed_e3m2_serial`         |        2.34 gso/s, 0 ulp |        2.53 gso/s, 0 ulp |        2.80 gso/s, 0 ulp |
-| `nk_dots_symmetric_e3m2_serial`      |        1.88 gso/s, 0 ulp |        2.04 gso/s, 0 ulp |        3.96 gso/s, 0 ulp |
-| `nk_dots_packed_e3m2_haswell`        |        30.8 gso/s, 0 ulp |        32.6 gso/s, 0 ulp |        32.3 gso/s, 0 ulp |
-| `nk_dots_symmetric_e3m2_haswell`     |        28.5 gso/s, 0 ulp |        32.4 gso/s, 0 ulp |        67.1 gso/s, 0 ulp |
-| `nk_dots_packed_e3m2_skylake`        |        38.9 gso/s, 0 ulp |        42.4 gso/s, 0 ulp |        43.3 gso/s, 0 ulp |
-| `nk_dots_symmetric_e3m2_skylake`     |        37.2 gso/s, 0 ulp |        43.6 gso/s, 0 ulp |        89.4 gso/s, 0 ulp |
-| `nk_dots_packed_e3m2_genoa`          |        50.2 gso/s, 0 ulp |        57.8 gso/s, 0 ulp |        60.7 gso/s, 0 ulp |
-| `nk_dots_symmetric_e3m2_genoa`       |        38.7 gso/s, 0 ulp |        41.6 gso/s, 0 ulp |        87.9 gso/s, 0 ulp |
-| `nk_dots_packed_e3m2_sapphireamx`    |         255 gso/s, 0 ulp |         448 gso/s, 0 ulp |         433 gso/s, 0 ulp |
-| `nk_dots_symmetric_e3m2_sapphireamx` |        65.1 gso/s, 0 ulp |         101 gso/s, 0 ulp |          91 gso/s, 0 ulp |
+| `nk_dots_packed_e3m2_serial`         |        4.97 gso/s, 0 ulp |        4.90 gso/s, 0 ulp |        5.03 gso/s, 0 ulp |
+| `nk_dots_symmetric_e3m2_serial`      |        3.40 gso/s, 0 ulp |        3.81 gso/s, 0 ulp |        3.88 gso/s, 0 ulp |
+| `nk_dots_packed_e3m2_haswell`        |        31.0 gso/s, 0 ulp |        32.2 gso/s, 0 ulp |        33.9 gso/s, 0 ulp |
+| `nk_dots_symmetric_e3m2_haswell`     |        29.0 gso/s, 0 ulp |        31.7 gso/s, 0 ulp |        31.1 gso/s, 0 ulp |
+| `nk_dots_packed_e3m2_skylake`        |        39.3 gso/s, 0 ulp |        43.4 gso/s, 0 ulp |        44.1 gso/s, 0 ulp |
+| `nk_dots_symmetric_e3m2_skylake`     |        40.0 gso/s, 0 ulp |        46.6 gso/s, 0 ulp |        47.1 gso/s, 0 ulp |
+| `nk_dots_packed_e3m2_sapphireamx`    |         263 gso/s, 0 ulp |         471 gso/s, 0 ulp |         471 gso/s, 0 ulp |
+| `nk_dots_symmetric_e3m2_sapphireamx` |        62.9 gso/s, 0 ulp |         101 gso/s, 0 ulp |        89.1 gso/s, 0 ulp |
 | __e2m3__                             | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
-| `nk_dots_packed_e2m3_serial`         |        2.33 gso/s, 0 ulp |        2.47 gso/s, 0 ulp |        4.82 gso/s, 0 ulp |
-| `nk_dots_symmetric_e2m3_serial`      |        1.94 gso/s, 0 ulp |        2.02 gso/s, 0 ulp |        4.05 gso/s, 0 ulp |
-| `nk_dots_packed_e2m3_haswell`        |        57.3 gso/s, 0 ulp |        61.5 gso/s, 0 ulp |        65.9 gso/s, 0 ulp |
-| `nk_dots_symmetric_e2m3_haswell`     |        50.1 gso/s, 0 ulp |          62 gso/s, 0 ulp |         132 gso/s, 0 ulp |
-| `nk_dots_packed_e2m3_skylake`        |        69.5 gso/s, 0 ulp |        79.5 gso/s, 0 ulp |        89.5 gso/s, 0 ulp |
-| `nk_dots_symmetric_e2m3_skylake`     |        64.2 gso/s, 0 ulp |          81 gso/s, 0 ulp |         168 gso/s, 0 ulp |
-| `nk_dots_packed_e2m3_genoa`          |        49.6 gso/s, 0 ulp |          59 gso/s, 0 ulp |        59.7 gso/s, 0 ulp |
-| `nk_dots_symmetric_e2m3_genoa`       |        39.9 gso/s, 0 ulp |          43 gso/s, 0 ulp |        88.8 gso/s, 0 ulp |
-| `nk_dots_packed_e2m3_sapphireamx`    |         422 gso/s, 0 ulp |       1,090 gso/s, 0 ulp |       1,060 gso/s, 0 ulp |
-| `nk_dots_symmetric_e2m3_sapphireamx` |        93.6 gso/s, 0 ulp |         211 gso/s, 0 ulp |         163 gso/s, 0 ulp |
-| `nk_dots_packed_e2m3_alder`          |        71.8 gso/s, 0 ulp |        80.8 gso/s, 0 ulp |        89.5 gso/s, 0 ulp |
-| `nk_dots_symmetric_e2m3_alder`       |        59.3 gso/s, 0 ulp |        73.4 gso/s, 0 ulp |        78.6 gso/s, 0 ulp |
+| `nk_dots_packed_e2m3_serial`         |        4.98 gso/s, 0 ulp |        4.95 gso/s, 0 ulp |        5.00 gso/s, 0 ulp |
+| `nk_dots_symmetric_e2m3_serial`      |        3.48 gso/s, 0 ulp |        3.83 gso/s, 0 ulp |        3.85 gso/s, 0 ulp |
+| `nk_dots_packed_e2m3_haswell`        |        58.6 gso/s, 0 ulp |        62.5 gso/s, 0 ulp |        65.3 gso/s, 0 ulp |
+| `nk_dots_symmetric_e2m3_haswell`     |        50.5 gso/s, 0 ulp |        61.2 gso/s, 0 ulp |        64.2 gso/s, 0 ulp |
+| `nk_dots_packed_e2m3_skylake`        |        69.8 gso/s, 0 ulp |        81.8 gso/s, 0 ulp |        88.4 gso/s, 0 ulp |
+| `nk_dots_symmetric_e2m3_skylake`     |        65.5 gso/s, 0 ulp |        83.4 gso/s, 0 ulp |        84.6 gso/s, 0 ulp |
+| `nk_dots_packed_e2m3_sapphireamx`    |         419 gso/s, 0 ulp |       1,195 gso/s, 0 ulp |       1,067 gso/s, 0 ulp |
+| `nk_dots_symmetric_e2m3_sapphireamx` |        94.5 gso/s, 0 ulp |         213 gso/s, 0 ulp |         184 gso/s, 0 ulp |
+| `nk_dots_packed_e2m3_alder`          |        72.9 gso/s, 0 ulp |        78.6 gso/s, 0 ulp |        85.7 gso/s, 0 ulp |
+| `nk_dots_symmetric_e2m3_alder`       |        61.6 gso/s, 0 ulp |        75.2 gso/s, 0 ulp |        54.9 gso/s, 0 ulp |
 | __i8__                               | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
 | `dots_packed_i8u8_with_mkl` 🧩        |                250 gso/s |                627 gso/s |              1,670 gso/s |
 | `nk_dots_packed_i8_serial`           |               6.44 gso/s |               6.62 gso/s |               7.44 gso/s |
@@ -327,170 +327,172 @@ Measured with Wasmtime v42 (Cranelift backend).
 | `nk_dots_symmetric_u1_serial`        |               7.42 gso/s |               27.9 gso/s |               87.3 gso/s |
 | `nk_dots_symmetric_u1_v128relaxed`   |               7.35 gso/s |               27.5 gso/s |               81.9 gso/s |
 
-### Apple M4
+### Apple M5
 
 #### Native
 
 | Kernel                             |                     256³ |                    1024³ |                    4096³ |
 | :--------------------------------- | -----------------------: | -----------------------: | -----------------------: |
 | __f64__                            | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
-| `nk_dots_packed_f64_serial`        |        1.82 gso/s, 3 ulp |        1.81 gso/s, 5 ulp |        1.82 gso/s, 6 ulp |
-| `nk_dots_symmetric_f64_serial`     |        1.40 gso/s, 0 ulp |        1.42 gso/s, 0 ulp |        1.42 gso/s, 0 ulp |
-| `nk_dots_packed_f64_neon`          |        5.62 gso/s, 0 ulp |        5.48 gso/s, 0 ulp |        5.21 gso/s, 0 ulp |
-| `nk_dots_symmetric_f64_neon`       |        4.46 gso/s, 0 ulp |        4.94 gso/s, 0 ulp |        5.71 gso/s, 0 ulp |
-| `nk_dots_packed_f64_smef64`        |      13.9 gso/s, 1.5 ulp |      12.1 gso/s, 1.1 ulp |      12.9 gso/s, 0.9 ulp |
-| `nk_dots_symmetric_f64_smef64`     |      5.18 gso/s, 1.5 ulp |      5.06 gso/s, 1.2 ulp |      4.46 gso/s, 1.1 ulp |
+| `nk_dots_packed_f64_serial`        |        2.49 gso/s, 3 ulp |        2.36 gso/s, 5 ulp |        2.48 gso/s, 6 ulp |
+| `nk_dots_symmetric_f64_serial`     |        1.38 gso/s, 0 ulp |        1.36 gso/s, 0 ulp |        1.49 gso/s, 0 ulp |
+| `nk_dots_packed_f64_neon`          |        6.31 gso/s, 0 ulp |        6.00 gso/s, 0 ulp |        6.34 gso/s, 0 ulp |
+| `nk_dots_symmetric_f64_neon`       |        5.57 gso/s, 0 ulp |        5.41 gso/s, 0 ulp |        5.40 gso/s, 0 ulp |
+| `nk_dots_packed_f64_smef64`        |      45.9 gso/s, 1.5 ulp |      46.3 gso/s, 1.1 ulp |      46.2 gso/s, 0.9 ulp |
+| `nk_dots_symmetric_f64_smef64`     |      22.5 gso/s, 1.5 ulp |      24.3 gso/s, 1.2 ulp |      21.3 gso/s, 1.1 ulp |
 | __f32__                            | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
-| `nk_dots_packed_f32_serial`        |       10.4 gso/s, 19 ulp |       10.6 gso/s, 30 ulp |      11.2 gso/s, 725 ulp |
-| `nk_dots_symmetric_f32_serial`     |      8.34 gso/s, 3.1 ulp |     8.64 gso/s, 12.8 ulp |     8.96 gso/s, 39.9 ulp |
-| `nk_dots_packed_f32_neon`          |        40.7 gso/s, 0 ulp |        40.1 gso/s, 0 ulp |        41.5 gso/s, 0 ulp |
-| `nk_dots_symmetric_f32_neon`       |      10.0 gso/s, 4.6 ulp |     10.2 gso/s, 17.7 ulp |       10.1 gso/s, 59 ulp |
-| `nk_dots_packed_f32_smef64`        |        42.8 gso/s, 0 ulp |       57.8 gso/s, 15 ulp |        50.7 gso/s, 0 ulp |
-| `nk_dots_symmetric_f32_smef64`     |      15.0 gso/s, 4.3 ulp |     15.4 gso/s, 19.0 ulp |        10.2 gso/s, 0 ulp |
+| `nk_dots_packed_f32_serial`        |       12.0 gso/s, 19 ulp |       11.4 gso/s, 30 ulp |      12.2 gso/s, 725 ulp |
+| `nk_dots_symmetric_f32_serial`     |      8.75 gso/s, 3.1 ulp |     9.15 gso/s, 12.8 ulp |     9.62 gso/s, 39.9 ulp |
+| `nk_dots_packed_f32_neon`          |        42.5 gso/s, 0 ulp |        40.6 gso/s, 0 ulp |        42.0 gso/s, 0 ulp |
+| `nk_dots_symmetric_f32_neon`       |      10.9 gso/s, 4.6 ulp |     10.5 gso/s, 17.7 ulp |       10.8 gso/s, 59 ulp |
+| `nk_dots_packed_f32_smef64`        |         236 gso/s, 0 ulp |        268 gso/s, 15 ulp |         221 gso/s, 0 ulp |
+| `nk_dots_symmetric_f32_smef64`     |      78.1 gso/s, 4.3 ulp |     94.1 gso/s, 19.0 ulp |        55.3 gso/s, 0 ulp |
 | __bf16__                           | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
-| `nk_dots_packed_bf16_serial`       |      17.0 gso/s, 0.1 ulp |      17.6 gso/s, 0.5 ulp |        17.2 gso/s, 5 ulp |
-| `nk_dots_symmetric_bf16_serial`    |     13.5 gso/s, 0.01 ulp |      13.4 gso/s, 0.7 ulp |      16.6 gso/s, 115 ulp |
-| `nk_dots_packed_bf16_neonbfdot`    |        57.7 gso/s, 0 ulp |      58.1 gso/s, 0.5 ulp |      58.8 gso/s, 7.2 ulp |
-| `nk_dots_symmetric_bf16_neonbfdot` |        38.9 gso/s, 0 ulp |      39.1 gso/s, 0.5 ulp |        37.7 gso/s, ? ulp |
-| `nk_dots_packed_bf16_sme`          |         437 gso/s, 0 ulp |       571 gso/s, 4.2 ulp |       507 gso/s, 3.8 ulp |
-| `nk_dots_symmetric_bf16_sme`       |      106 gso/s, 0.07 ulp |      94.2 gso/s, 1.2 ulp |      90.0 gso/s, 1.8 ulp |
+| `nk_dots_packed_bf16_serial`       |      20.4 gso/s, 0.1 ulp |      19.6 gso/s, 0.5 ulp |        20.3 gso/s, 5 ulp |
+| `nk_dots_symmetric_bf16_serial`    |     16.3 gso/s, 0.01 ulp |      16.9 gso/s, 0.7 ulp |      17.8 gso/s, 115 ulp |
+| `nk_dots_packed_bf16_neon`         |        83.0 gso/s, 0 ulp |        80.2 gso/s, 0 ulp |        84.0 gso/s, 0 ulp |
+| `nk_dots_symmetric_bf16_neon`      |        39.5 gso/s, 0 ulp |        41.2 gso/s, 0 ulp |        41.9 gso/s, 0 ulp |
+| `nk_dots_packed_bf16_neonbfdot`    |        57.9 gso/s, 0 ulp |      58.5 gso/s, 0.5 ulp |      63.4 gso/s, 7.2 ulp |
+| `nk_dots_symmetric_bf16_neonbfdot` |        38.6 gso/s, 0 ulp |      41.1 gso/s, 0.5 ulp |        43.5 gso/s, 0 ulp |
+| `nk_dots_packed_bf16_sme`          |       1,106 gso/s, 0 ulp |     1,208 gso/s, 4.2 ulp |     1,190 gso/s, 3.8 ulp |
+| `nk_dots_symmetric_bf16_sme`       |      606 gso/s, 0.07 ulp |       650 gso/s, 1.2 ulp |       458 gso/s, 1.8 ulp |
 | __f16__                            | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
-| `nk_dots_packed_f16_serial`        |      13.1 gso/s, 204 ulp |       13.4 gso/s, 36 ulp |      14.1 gso/s, 326 ulp |
-| `nk_dots_symmetric_f16_serial`     |       21.7 gso/s, 13 ulp |     18.0 gso/s, 24.6 ulp |      26.2 gso/s, 506 ulp |
-| `nk_dots_packed_f16_neonhalf`      |     76.6 gso/s, 16.8 ulp |     75.5 gso/s, 25.5 ulp |      82.3 gso/s, 618 ulp |
-| `nk_dots_symmetric_f16_neonhalf`   |     20.0 gso/s, 12.1 ulp |     20.4 gso/s, 25.0 ulp |      20.7 gso/s, 506 ulp |
-| `nk_dots_packed_f16_neonfhm`       |      111 gso/s, 16.7 ulp |      110 gso/s, 25.5 ulp |       108 gso/s, 618 ulp |
-| `nk_dots_symmetric_f16_neonfhm`    |     35.3 gso/s, 12.1 ulp |     36.4 gso/s, 25.0 ulp |      36.7 gso/s, 506 ulp |
-| `nk_dots_packed_f16_sme`           |      461 gso/s, 14.8 ulp |      484 gso/s, 28.2 ulp |      476 gso/s, 28.2 ulp |
-| `nk_dots_symmetric_f16_sme`        |     98.6 gso/s, 12.1 ulp |     95.2 gso/s, 23.8 ulp |     88.4 gso/s, 24.4 ulp |
+| `nk_dots_packed_f16_serial`        |      14.8 gso/s, 204 ulp |       14.2 gso/s, 36 ulp |      14.8 gso/s, 326 ulp |
+| `nk_dots_symmetric_f16_serial`     |       24.3 gso/s, 13 ulp |     24.9 gso/s, 24.6 ulp |      26.7 gso/s, 506 ulp |
+| `nk_dots_packed_f16_neonhalf`      |     77.0 gso/s, 16.8 ulp |     79.1 gso/s, 25.5 ulp |      84.2 gso/s, 618 ulp |
+| `nk_dots_symmetric_f16_neonhalf`   |     20.5 gso/s, 12.1 ulp |     20.4 gso/s, 25.0 ulp |      22.5 gso/s, 506 ulp |
+| `nk_dots_packed_f16_neonfhm`       |      104 gso/s, 16.7 ulp |      110 gso/s, 25.5 ulp |       118 gso/s, 618 ulp |
+| `nk_dots_symmetric_f16_neonfhm`    |     34.5 gso/s, 12.1 ulp |     40.4 gso/s, 25.0 ulp |      41.5 gso/s, 506 ulp |
+| `nk_dots_packed_f16_sme`           |    1,106 gso/s, 14.8 ulp |    1,213 gso/s, 28.2 ulp |    1,190 gso/s, 28.2 ulp |
+| `nk_dots_symmetric_f16_sme`        |      607 gso/s, 12.1 ulp |      636 gso/s, 23.8 ulp |      458 gso/s, 24.4 ulp |
 | __e5m2__                           | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
-| `nk_dots_packed_e5m2_serial`       |        12.1 gso/s, 0 ulp |        11.8 gso/s, 0 ulp |        13.7 gso/s, 0 ulp |
-| `nk_dots_symmetric_e5m2_serial`    |        7.88 gso/s, 0 ulp |        8.23 gso/s, 0 ulp |        8.31 gso/s, 0 ulp |
-| `nk_dots_packed_e5m2_neonfhm`      |        95.2 gso/s, 0 ulp |        98.3 gso/s, 0 ulp |        99.3 gso/s, 0 ulp |
-| `nk_dots_symmetric_e5m2_neonfhm`   |        61.0 gso/s, 0 ulp |        67.7 gso/s, 0 ulp |        76.3 gso/s, 0 ulp |
-| `nk_dots_packed_e5m2_sme`          |         327 gso/s, 0 ulp |       1,120 gso/s, 0 ulp |         552 gso/s, 0 ulp |
-| `nk_dots_symmetric_e5m2_sme`       |        70.4 gso/s, 0 ulp |        66.3 gso/s, 0 ulp |         120 gso/s, 0 ulp |
+| `nk_dots_packed_e5m2_serial`       |        15.9 gso/s, 0 ulp |        16.7 gso/s, 0 ulp |        17.2 gso/s, 0 ulp |
+| `nk_dots_symmetric_e5m2_serial`    |        7.56 gso/s, 0 ulp |        8.37 gso/s, 0 ulp |        8.99 gso/s, 0 ulp |
+| `nk_dots_packed_e5m2_neonfhm`      |        88.1 gso/s, 0 ulp |        97.3 gso/s, 0 ulp |         103 gso/s, 0 ulp |
+| `nk_dots_symmetric_e5m2_neonfhm`   |        61.0 gso/s, 0 ulp |        73.2 gso/s, 0 ulp |        79.3 gso/s, 0 ulp |
+| `nk_dots_packed_e5m2_sme`          |         729 gso/s, 0 ulp |         800 gso/s, 0 ulp |         792 gso/s, 0 ulp |
+| `nk_dots_symmetric_e5m2_sme`       |         208 gso/s, 0 ulp |         227 gso/s, 0 ulp |         229 gso/s, 0 ulp |
 | __e4m3__                           | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
-| `nk_dots_packed_e4m3_serial`       |        1.19 gso/s, 0 ulp |        1.20 gso/s, 0 ulp |        1.20 gso/s, 0 ulp |
-| `nk_dots_symmetric_e4m3_serial`    |        1.23 gso/s, 0 ulp |        1.24 gso/s, 0 ulp |   1.24 gso/s, 0.0001 ulp |
-| `nk_dots_packed_e4m3_neonfhm`      |        28.7 gso/s, 0 ulp |        29.6 gso/s, 0 ulp |        26.7 gso/s, 0 ulp |
-| `nk_dots_symmetric_e4m3_neonfhm`   |        36.1 gso/s, 0 ulp |        37.4 gso/s, 0 ulp |        37.6 gso/s, 0 ulp |
-| `nk_dots_packed_e4m3_sme`          |         168 gso/s, 0 ulp |         219 gso/s, 0 ulp |         181 gso/s, 0 ulp |
-| `nk_dots_symmetric_e4m3_sme`       |        25.6 gso/s, 0 ulp |        23.2 gso/s, 0 ulp |        35.1 gso/s, 0 ulp |
+| `nk_dots_packed_e4m3_serial`       |        1.24 gso/s, 0 ulp |        1.20 gso/s, 0 ulp |        1.24 gso/s, 0 ulp |
+| `nk_dots_symmetric_e4m3_serial`    |        1.20 gso/s, 0 ulp |        1.24 gso/s, 0 ulp |        1.32 gso/s, 0 ulp |
+| `nk_dots_packed_e4m3_neonfhm`      |        29.6 gso/s, 0 ulp |        32.2 gso/s, 0 ulp |        34.1 gso/s, 0 ulp |
+| `nk_dots_symmetric_e4m3_neonfhm`   |        32.0 gso/s, 0 ulp |        36.6 gso/s, 0 ulp |        38.9 gso/s, 0 ulp |
+| `nk_dots_packed_e4m3_sme`          |         284 gso/s, 0 ulp |         314 gso/s, 0 ulp |         316 gso/s, 0 ulp |
+| `nk_dots_symmetric_e4m3_sme`       |        74.3 gso/s, 0 ulp |        80.9 gso/s, 0 ulp |        77.8 gso/s, 0 ulp |
 | __e3m2__                           | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
-| `nk_dots_packed_e3m2_serial`       |        12.0 gso/s, 0 ulp |        11.7 gso/s, 0 ulp |        11.4 gso/s, 0 ulp |
-| `nk_dots_symmetric_e3m2_serial`    |        7.56 gso/s, 0 ulp |        7.75 gso/s, 0 ulp |        7.76 gso/s, 0 ulp |
-| `nk_dots_packed_e3m2_sme`          |        15.4 gso/s, 0 ulp |        11.9 gso/s, 0 ulp |        12.3 gso/s, 0 ulp |
-| `nk_dots_symmetric_e3m2_sme`       |        1.59 gso/s, 0 ulp |        1.67 gso/s, 0 ulp |        1.79 gso/s, 0 ulp |
+| `nk_dots_packed_e3m2_serial`       |        14.0 gso/s, 0 ulp |        14.6 gso/s, 0 ulp |        15.5 gso/s, 0 ulp |
+| `nk_dots_symmetric_e3m2_serial`    |        7.51 gso/s, 0 ulp |        8.10 gso/s, 0 ulp |        9.05 gso/s, 0 ulp |
+| `nk_dots_packed_e3m2_sme`          |         671 gso/s, 0 ulp |         738 gso/s, 0 ulp |         730 gso/s, 0 ulp |
+| `nk_dots_symmetric_e3m2_sme`       |         191 gso/s, 0 ulp |         206 gso/s, 0 ulp |         207 gso/s, 0 ulp |
 | __e2m3__                           | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
-| `nk_dots_packed_e2m3_serial`       |        13.3 gso/s, 0 ulp |        11.5 gso/s, 0 ulp |        14.6 gso/s, 0 ulp |
-| `nk_dots_symmetric_e2m3_serial`    |        7.85 gso/s, 0 ulp |        8.23 gso/s, 0 ulp |        8.30 gso/s, 0 ulp |
-| `nk_dots_packed_e2m3_sme`          |         518 gso/s, 0 ulp |         740 gso/s, 0 ulp |       1,017 gso/s, 0 ulp |
-| `nk_dots_symmetric_e2m3_sme`       |        65.1 gso/s, 0 ulp |        79.6 gso/s, 0 ulp |        98.4 gso/s, 0 ulp |
+| `nk_dots_packed_e2m3_serial`       |        14.4 gso/s, 0 ulp |        14.8 gso/s, 0 ulp |        15.5 gso/s, 0 ulp |
+| `nk_dots_symmetric_e2m3_serial`    |        7.58 gso/s, 0 ulp |        8.21 gso/s, 0 ulp |        9.09 gso/s, 0 ulp |
+| `nk_dots_packed_e2m3_sme`          |       1,211 gso/s, 0 ulp |       1,404 gso/s, 0 ulp |       1,313 gso/s, 0 ulp |
+| `nk_dots_symmetric_e2m3_sme`       |         372 gso/s, 0 ulp |         410 gso/s, 0 ulp |         416 gso/s, 0 ulp |
 | __i8__                             | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
-| `nk_dots_packed_i8_serial`         |               17.0 gso/s |               17.3 gso/s |               17.3 gso/s |
-| `nk_dots_symmetric_i8_serial`      |               13.9 gso/s |               14.1 gso/s |               14.3 gso/s |
-| `nk_dots_packed_i8_neonsdot`       |                301 gso/s |                365 gso/s |                389 gso/s |
-| `nk_dots_symmetric_i8_neonsdot`    |               72.8 gso/s |               79.7 gso/s |               79.9 gso/s |
-| `nk_dots_packed_i8_sme`            |                854 gso/s |                904 gso/s |              1,206 gso/s |
-| `nk_dots_symmetric_i8_sme`         |                156 gso/s |                195 gso/s |                154 gso/s |
+| `nk_dots_packed_i8_serial`         |               18.9 gso/s |               20.0 gso/s |               20.2 gso/s |
+| `nk_dots_symmetric_i8_serial`      |               12.6 gso/s |               13.9 gso/s |               14.8 gso/s |
+| `nk_dots_packed_i8_neonsdot`       |                345 gso/s |                419 gso/s |                477 gso/s |
+| `nk_dots_symmetric_i8_neonsdot`    |               76.6 gso/s |               86.9 gso/s |               87.2 gso/s |
+| `nk_dots_packed_i8_sme`            |              2,348 gso/s |              2,687 gso/s |              2,570 gso/s |
+| `nk_dots_symmetric_i8_sme`         |              1,390 gso/s |              1,531 gso/s |              1,369 gso/s |
 | __u8__                             | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
-| `nk_dots_packed_u8_serial`         |               15.4 gso/s |               16.0 gso/s |               16.0 gso/s |
-| `nk_dots_symmetric_u8_serial`      |               15.8 gso/s |               16.2 gso/s |               16.2 gso/s |
-| `nk_dots_packed_u8_neonsdot`       |                329 gso/s |                401 gso/s |                387 gso/s |
-| `nk_dots_symmetric_u8_neonsdot`    |               72.5 gso/s |               79.8 gso/s |               80.4 gso/s |
-| `nk_dots_packed_u8_sme`            |                907 gso/s |                970 gso/s |              1,224 gso/s |
-| `nk_dots_symmetric_u8_sme`         |                167 gso/s |                204 gso/s |                163 gso/s |
+| `nk_dots_packed_u8_serial`         |               16.3 gso/s |               16.3 gso/s |               17.4 gso/s |
+| `nk_dots_symmetric_u8_serial`      |               14.8 gso/s |               16.2 gso/s |               17.5 gso/s |
+| `nk_dots_packed_u8_neonsdot`       |                343 gso/s |                413 gso/s |                470 gso/s |
+| `nk_dots_symmetric_u8_neonsdot`    |               76.1 gso/s |               87.4 gso/s |               87.7 gso/s |
+| `nk_dots_packed_u8_sme`            |              2,351 gso/s |              2,684 gso/s |              2,570 gso/s |
+| `nk_dots_symmetric_u8_sme`         |              1,390 gso/s |              1,543 gso/s |              1,371 gso/s |
 | __i4__                             | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
-| `nk_dots_packed_i4_serial`         |               17.3 gso/s |               17.6 gso/s |               18.9 gso/s |
-| `nk_dots_symmetric_i4_serial`      |               15.1 gso/s |               15.3 gso/s |               15.3 gso/s |
-| `nk_dots_packed_i4_neonsdot`       |                255 gso/s |                278 gso/s |                283 gso/s |
-| `nk_dots_symmetric_i4_neonsdot`    |                117 gso/s |                144 gso/s |                149 gso/s |
-| `nk_dots_packed_i4_sme`            |              1,028 gso/s |                960 gso/s |              1,105 gso/s |
-| `nk_dots_symmetric_i4_sme`         |                310 gso/s |                249 gso/s |                393 gso/s |
+| `nk_dots_packed_i4_serial`         |               18.3 gso/s |               18.2 gso/s |               19.6 gso/s |
+| `nk_dots_symmetric_i4_serial`      |               13.7 gso/s |               14.9 gso/s |               15.6 gso/s |
+| `nk_dots_packed_i4_neonsdot`       |                259 gso/s |                284 gso/s |                291 gso/s |
+| `nk_dots_symmetric_i4_neonsdot`    |                129 gso/s |                162 gso/s |                171 gso/s |
+| `nk_dots_packed_i4_sme`            |              2,269 gso/s |              2,455 gso/s |              2,396 gso/s |
+| `nk_dots_symmetric_i4_sme`         |              1,585 gso/s |              1,692 gso/s |              1,737 gso/s |
 | __u4__                             | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
-| `nk_dots_packed_u4_serial`         |               19.1 gso/s |               19.7 gso/s |               19.4 gso/s |
-| `nk_dots_symmetric_u4_serial`      |               16.1 gso/s |               16.4 gso/s |               16.1 gso/s |
-| `nk_dots_packed_u4_neonsdot`       |                290 gso/s |                320 gso/s |                328 gso/s |
-| `nk_dots_symmetric_u4_neonsdot`    |                125 gso/s |                144 gso/s |                149 gso/s |
-| `nk_dots_packed_u4_sme`            |              1,230 gso/s |              1,013 gso/s |              1,246 gso/s |
-| `nk_dots_symmetric_u4_sme`         |                340 gso/s |                285 gso/s |                401 gso/s |
+| `nk_dots_packed_u4_serial`         |               19.4 gso/s |               19.4 gso/s |               20.6 gso/s |
+| `nk_dots_symmetric_u4_serial`      |               14.9 gso/s |               16.4 gso/s |               17.4 gso/s |
+| `nk_dots_packed_u4_neonsdot`       |                300 gso/s |                319 gso/s |                340 gso/s |
+| `nk_dots_symmetric_u4_neonsdot`    |                128 gso/s |                166 gso/s |                173 gso/s |
+| `nk_dots_packed_u4_sme`            |              2,342 gso/s |              2,503 gso/s |              2,471 gso/s |
+| `nk_dots_symmetric_u4_sme`         |              1,695 gso/s |              1,925 gso/s |              2,055 gso/s |
 | __u1__                             | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
-| `nk_dots_packed_u1_serial`         |                342 gso/s |                429 gso/s |                447 gso/s |
-| `nk_dots_symmetric_u1_serial`      |                226 gso/s |                342 gso/s |                357 gso/s |
-| `nk_dots_packed_u1_neon`           |                795 gso/s |                931 gso/s |                983 gso/s |
-| `nk_dots_symmetric_u1_neon`        |                290 gso/s |                483 gso/s |                561 gso/s |
-| `nk_dots_packed_u1_smebi32`        |                998 gso/s |              4,251 gso/s |              7,369 gso/s |
-| `nk_dots_symmetric_u1_smebi32`     |               53.7 gso/s |                278 gso/s |                548 gso/s |
+| `nk_dots_packed_u1_serial`         |                405 gso/s |                467 gso/s |                534 gso/s |
+| `nk_dots_symmetric_u1_serial`      |                254 gso/s |                430 gso/s |                519 gso/s |
+| `nk_dots_packed_u1_neon`           |                849 gso/s |                932 gso/s |              1,014 gso/s |
+| `nk_dots_symmetric_u1_neon`        |                318 gso/s |                580 gso/s |                664 gso/s |
+| `nk_dots_packed_u1_smebi32`        |              1,903 gso/s |             12,029 gso/s |             26,354 gso/s |
+| `nk_dots_symmetric_u1_smebi32`     |                176 gso/s |                768 gso/s |              2,153 gso/s |
 
 #### WASM
 
-Measured with Wasmtime v42 (Cranelift backend).
+Measured with Wasmtime v43 (Cranelift backend).
 
 | Kernel                               |                     256³ |                    1024³ |                    4096³ |
 | :----------------------------------- | -----------------------: | -----------------------: | -----------------------: |
 | __f64__                              | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
-| `nk_dots_packed_f64_serial`          |        2.11 gso/s, 3 ulp |        4.67 gso/s, 5 ulp |      5.37 gso/s, 2.2 ulp |
-| `nk_dots_symmetric_f64_serial`       |        1.89 gso/s, 4 ulp |        3.21 gso/s, 3 ulp |      5.62 gso/s, 2.4 ulp |
-| `nk_dots_packed_f64_v128relaxed`     |     34.9 gso/s, 32.4 ulp |     32.5 gso/s, 32.4 ulp |     38.4 gso/s, 32.4 ulp |
-| `nk_dots_symmetric_f64_v128relaxed`  |     10.2 gso/s, 37.6 ulp |     10.4 gso/s, 37.6 ulp |     10.9 gso/s, 37.6 ulp |
+| `nk_dots_packed_f64_serial`          |        2.15 gso/s, 3 ulp |        2.07 gso/s, 5 ulp |      2.23 gso/s, 2.2 ulp |
+| `nk_dots_symmetric_f64_serial`       |        2.35 gso/s, 4 ulp |        2.24 gso/s, 3 ulp |      2.46 gso/s, 2.4 ulp |
+| `nk_dots_packed_f64_v128relaxed`     |     5.59 gso/s, 32.4 ulp |     6.10 gso/s, 32.4 ulp |     6.24 gso/s, 32.4 ulp |
+| `nk_dots_symmetric_f64_v128relaxed`  |     5.26 gso/s, 37.6 ulp |     5.89 gso/s, 37.6 ulp |     6.04 gso/s, 37.6 ulp |
 | __f32__                              | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
-| `nk_dots_packed_f32_serial`          |       9.09 gso/s, 19 ulp |       17.2 gso/s, 30 ulp |     26.3 gso/s, 41.7 ulp |
-| `nk_dots_symmetric_f32_serial`       |       6.90 gso/s, 20 ulp |       18.2 gso/s, 29 ulp |     18.2 gso/s, 58.8 ulp |
-| `nk_dots_packed_f32_v128relaxed`     |     61.5 gso/s, 44.1 ulp |     65.7 gso/s, 44.1 ulp |     68.0 gso/s, 44.1 ulp |
-| `nk_dots_symmetric_f32_v128relaxed`  |     19.5 gso/s, 48.2 ulp |     20.3 gso/s, 48.2 ulp |     20.4 gso/s, 48.2 ulp |
+| `nk_dots_packed_f32_serial`          |       8.95 gso/s, 19 ulp |       8.71 gso/s, 30 ulp |     9.17 gso/s, 41.7 ulp |
+| `nk_dots_symmetric_f32_serial`       |       10.9 gso/s, 20 ulp |       10.5 gso/s, 29 ulp |     11.6 gso/s, 58.8 ulp |
+| `nk_dots_packed_f32_v128relaxed`     |     27.4 gso/s, 44.1 ulp |     31.6 gso/s, 44.1 ulp |     32.7 gso/s, 44.1 ulp |
+| `nk_dots_symmetric_f32_v128relaxed`  |     10.0 gso/s, 48.2 ulp |     10.9 gso/s, 48.2 ulp |     11.2 gso/s, 48.2 ulp |
 | __bf16__                             | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
-| `nk_dots_packed_bf16_serial`         |      7.36 gso/s, 0.1 ulp |      17.8 gso/s, 0.5 ulp |      21.2 gso/s, 1.3 ulp |
-| `nk_dots_symmetric_bf16_serial`      |        8.24 gso/s, 0 ulp |      26.9 gso/s, 0.6 ulp |      26.9 gso/s, 1.1 ulp |
-| `nk_dots_packed_bf16_v128relaxed`    |      52.7 gso/s, 1.4 ulp |      55.1 gso/s, 1.4 ulp |      59.0 gso/s, 1.4 ulp |
-| `nk_dots_symmetric_bf16_v128relaxed` |      16.8 gso/s, 1.3 ulp |      16.3 gso/s, 1.3 ulp |      18.0 gso/s, 1.3 ulp |
+| `nk_dots_packed_bf16_serial`         |      23.1 gso/s, 0.1 ulp |      21.6 gso/s, 0.5 ulp |      24.3 gso/s, 1.3 ulp |
+| `nk_dots_symmetric_bf16_serial`      |        24.3 gso/s, 0 ulp |      24.9 gso/s, 0.6 ulp |      28.0 gso/s, 1.1 ulp |
+| `nk_dots_packed_bf16_v128relaxed`    |      70.4 gso/s, 1.4 ulp |      86.2 gso/s, 1.4 ulp |      90.3 gso/s, 1.4 ulp |
+| `nk_dots_symmetric_bf16_v128relaxed` |      37.2 gso/s, 1.3 ulp |      45.5 gso/s, 1.3 ulp |      47.7 gso/s, 1.3 ulp |
 | __f16__                              | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
-| `nk_dots_packed_f16_serial`          |     0.615 gso/s, 204 ulp |       1.42 gso/s, 36 ulp |     1.67 gso/s, 25.9 ulp |
-| `nk_dots_symmetric_f16_serial`       |      0.528 gso/s, 13 ulp |       1.38 gso/s, 29 ulp |     1.46 gso/s, 27.9 ulp |
-| `nk_dots_packed_f16_v128relaxed`     |           ? gso/s, ? ulp |           ? gso/s, ? ulp |           ? gso/s, ? ulp |
-| `nk_dots_symmetric_f16_v128relaxed`  |           ? gso/s, ? ulp |           ? gso/s, ? ulp |           ? gso/s, ? ulp |
+| `nk_dots_packed_f16_serial`          |      12.2 gso/s, 204 ulp |       11.6 gso/s, 36 ulp |     12.4 gso/s, 25.9 ulp |
+| `nk_dots_symmetric_f16_serial`       |       1.65 gso/s, 13 ulp |       1.54 gso/s, 29 ulp |     1.70 gso/s, 27.9 ulp |
+| `nk_dots_packed_f16_v128relaxed`     |        35.4 gso/s, ? ulp |        40.7 gso/s, ? ulp |        39.3 gso/s, ? ulp |
+| `nk_dots_symmetric_f16_v128relaxed`  |        14.7 gso/s, ? ulp |        17.1 gso/s, ? ulp |        17.3 gso/s, ? ulp |
 | __e5m2__                             | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
-| `nk_dots_packed_e5m2_serial`         |        1.96 gso/s, 0 ulp |        4.57 gso/s, 0 ulp |        5.72 gso/s, 0 ulp |
-| `nk_dots_symmetric_e5m2_serial`      |        2.78 gso/s, 0 ulp |        7.59 gso/s, 0 ulp |        8.02 gso/s, 0 ulp |
-| `nk_dots_packed_e5m2_v128relaxed`    |        11.5 gso/s, ? ulp |        11.6 gso/s, ? ulp |        11.6 gso/s, ? ulp |
-| `nk_dots_symmetric_e5m2_v128relaxed` |        11.7 gso/s, 0 ulp |        12.2 gso/s, 0 ulp |        12.3 gso/s, 0 ulp |
+| `nk_dots_packed_e5m2_serial`         |        5.95 gso/s, 0 ulp |        5.59 gso/s, 0 ulp |        6.31 gso/s, 0 ulp |
+| `nk_dots_symmetric_e5m2_serial`      |        8.98 gso/s, 0 ulp |        9.09 gso/s, 0 ulp |        10.2 gso/s, 0 ulp |
+| `nk_dots_packed_e5m2_v128relaxed`    |        23.0 gso/s, 0 ulp |        25.5 gso/s, 0 ulp |        25.9 gso/s, 0 ulp |
+| `nk_dots_symmetric_e5m2_v128relaxed` |        12.3 gso/s, 0 ulp |        13.8 gso/s, 0 ulp |        14.2 gso/s, 0 ulp |
 | __e4m3__                             | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
-| `nk_dots_packed_e4m3_serial`         |       0.340 gso/s, 0 ulp |       0.717 gso/s, 0 ulp |       0.864 gso/s, 0 ulp |
-| `nk_dots_symmetric_e4m3_serial`      |       0.331 gso/s, 0 ulp |       0.822 gso/s, 0 ulp |       0.874 gso/s, 0 ulp |
-| `nk_dots_packed_e4m3_v128relaxed`    |        9.44 gso/s, ? ulp |        9.57 gso/s, ? ulp |        9.58 gso/s, ? ulp |
-| `nk_dots_symmetric_e4m3_v128relaxed` |        9.46 gso/s, 0 ulp |        10.0 gso/s, 0 ulp |        10.2 gso/s, 0 ulp |
+| `nk_dots_packed_e4m3_serial`         |       0.884 gso/s, 0 ulp |       0.840 gso/s, 0 ulp |       0.911 gso/s, 0 ulp |
+| `nk_dots_symmetric_e4m3_serial`      |       0.868 gso/s, 0 ulp |       0.826 gso/s, 0 ulp |       0.915 gso/s, 0 ulp |
+| `nk_dots_packed_e4m3_v128relaxed`    |        19.2 gso/s, 0 ulp |        20.8 gso/s, 0 ulp |        22.5 gso/s, 0 ulp |
+| `nk_dots_symmetric_e4m3_v128relaxed` |        10.7 gso/s, 0 ulp |        11.7 gso/s, 0 ulp |        12.1 gso/s, 0 ulp |
 | __e3m2__                             | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
-| `nk_dots_packed_e3m2_serial`         |        1.90 gso/s, 0 ulp |        4.38 gso/s, 0 ulp |        5.66 gso/s, 0 ulp |
-| `nk_dots_symmetric_e3m2_serial`      |        2.72 gso/s, 0 ulp |        7.33 gso/s, 0 ulp |        7.70 gso/s, 0 ulp |
-| `nk_dots_packed_e3m2_v128relaxed`    |           ? gso/s, ? ulp |           ? gso/s, ? ulp |           ? gso/s, ? ulp |
-| `nk_dots_symmetric_e3m2_v128relaxed` |           ? gso/s, ? ulp |           ? gso/s, ? ulp |           ? gso/s, ? ulp |
+| `nk_dots_packed_e3m2_serial`         |        5.89 gso/s, 0 ulp |        5.73 gso/s, 0 ulp |        6.25 gso/s, 0 ulp |
+| `nk_dots_symmetric_e3m2_serial`      |        7.69 gso/s, 0 ulp |        7.45 gso/s, 0 ulp |        8.68 gso/s, 0 ulp |
+| `nk_dots_packed_e3m2_v128relaxed`    |        35.2 gso/s, 0 ulp |        38.9 gso/s, 0 ulp |        40.1 gso/s, 0 ulp |
+| `nk_dots_symmetric_e3m2_v128relaxed` |        32.0 gso/s, 0 ulp |        38.1 gso/s, 0 ulp |        39.7 gso/s, 0 ulp |
 | __e2m3__                             | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
-| `nk_dots_packed_e2m3_serial`         |        1.93 gso/s, 0 ulp |        4.42 gso/s, 0 ulp |        5.66 gso/s, 0 ulp |
-| `nk_dots_symmetric_e2m3_serial`      |        2.71 gso/s, 0 ulp |        7.31 gso/s, 0 ulp |        7.70 gso/s, 0 ulp |
-| `nk_dots_packed_e2m3_v128relaxed`    |        34.8 gso/s, 0 ulp |        35.0 gso/s, 0 ulp |        38.6 gso/s, 0 ulp |
-| `nk_dots_symmetric_e2m3_v128relaxed` |        32.8 gso/s, 0 ulp |        35.3 gso/s, 0 ulp |        38.2 gso/s, 0 ulp |
+| `nk_dots_packed_e2m3_serial`         |        5.97 gso/s, 0 ulp |        5.69 gso/s, 0 ulp |        6.32 gso/s, 0 ulp |
+| `nk_dots_symmetric_e2m3_serial`      |        7.65 gso/s, 0 ulp |        7.71 gso/s, 0 ulp |        8.66 gso/s, 0 ulp |
+| `nk_dots_packed_e2m3_v128relaxed`    |        35.4 gso/s, 0 ulp |        39.0 gso/s, 0 ulp |        40.1 gso/s, 0 ulp |
+| `nk_dots_symmetric_e2m3_v128relaxed` |        31.6 gso/s, 0 ulp |        37.6 gso/s, 0 ulp |        39.7 gso/s, 0 ulp |
 | __i8__                               | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
-| `nk_dots_packed_i8_serial`           |               4.60 gso/s |               11.1 gso/s |               13.8 gso/s |
-| `nk_dots_symmetric_i8_serial`        |               6.57 gso/s |               17.2 gso/s |               18.4 gso/s |
-| `nk_dots_packed_i8_v128relaxed`      |               47.1 gso/s |               48.8 gso/s |               52.7 gso/s |
-| `nk_dots_symmetric_i8_v128relaxed`   |               43.1 gso/s |               41.8 gso/s |               52.7 gso/s |
+| `nk_dots_packed_i8_serial`           |               16.5 gso/s |               16.0 gso/s |               16.7 gso/s |
+| `nk_dots_symmetric_i8_serial`        |               12.5 gso/s |               11.8 gso/s |               13.6 gso/s |
+| `nk_dots_packed_i8_v128relaxed`      |               44.0 gso/s |               50.0 gso/s |               52.1 gso/s |
+| `nk_dots_symmetric_i8_v128relaxed`   |               37.7 gso/s |               45.5 gso/s |               50.6 gso/s |
 | __u8__                               | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
-| `nk_dots_packed_u8_serial`           |               4.67 gso/s |               11.4 gso/s |               14.1 gso/s |
-| `nk_dots_symmetric_u8_serial`        |               7.18 gso/s |               17.0 gso/s |               18.6 gso/s |
-| `nk_dots_packed_u8_v128relaxed`      |               24.5 gso/s |               25.3 gso/s |               25.6 gso/s |
-| `nk_dots_symmetric_u8_v128relaxed`   |               20.3 gso/s |               23.5 gso/s |               24.4 gso/s |
+| `nk_dots_packed_u8_serial`           |               17.2 gso/s |               16.7 gso/s |               17.7 gso/s |
+| `nk_dots_symmetric_u8_serial`        |               13.0 gso/s |               12.1 gso/s |               14.1 gso/s |
+| `nk_dots_packed_u8_v128relaxed`      |               43.3 gso/s |               47.7 gso/s |               50.8 gso/s |
+| `nk_dots_symmetric_u8_v128relaxed`   |               34.6 gso/s |               42.2 gso/s |               48.6 gso/s |
 | __i4__                               | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
-| `nk_dots_packed_i4_serial`           |               7.06 gso/s |               18.5 gso/s |               19.7 gso/s |
-| `nk_dots_symmetric_i4_serial`        |               5.43 gso/s |               12.5 gso/s |               13.1 gso/s |
-| `nk_dots_packed_i4_v128relaxed`      |               26.2 gso/s |               24.3 gso/s |               22.8 gso/s |
-| `nk_dots_symmetric_i4_v128relaxed`   |               54.2 gso/s |               67.9 gso/s |               73.4 gso/s |
+| `nk_dots_packed_i4_serial`           |               15.0 gso/s |               14.3 gso/s |               15.9 gso/s |
+| `nk_dots_symmetric_i4_serial`        |               12.8 gso/s |               12.6 gso/s |               14.0 gso/s |
+| `nk_dots_packed_i4_v128relaxed`      |               29.3 gso/s |               26.7 gso/s |               25.8 gso/s |
+| `nk_dots_symmetric_i4_v128relaxed`   |               54.0 gso/s |               70.9 gso/s |               80.8 gso/s |
 | __u4__                               | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
-| `nk_dots_packed_u4_serial`           |               5.17 gso/s |               14.0 gso/s |               15.0 gso/s |
-| `nk_dots_symmetric_u4_serial`        |               5.26 gso/s |               11.5 gso/s |               12.1 gso/s |
-| `nk_dots_packed_u4_v128relaxed`      |               78.0 gso/s |               82.7 gso/s |               84.0 gso/s |
-| `nk_dots_symmetric_u4_v128relaxed`   |               66.9 gso/s |               81.4 gso/s |               85.3 gso/s |
+| `nk_dots_packed_u4_serial`           |               14.6 gso/s |               14.1 gso/s |               15.4 gso/s |
+| `nk_dots_symmetric_u4_serial`        |               11.9 gso/s |               11.8 gso/s |               13.0 gso/s |
+| `nk_dots_packed_u4_v128relaxed`      |               84.9 gso/s |               92.5 gso/s |               96.2 gso/s |
+| `nk_dots_symmetric_u4_v128relaxed`   |               67.4 gso/s |               87.7 gso/s |               93.7 gso/s |
 | __u1__                               | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ | ░░░░░░░░░░░░░░░░░░░░░░░░ |
-| `nk_dots_packed_u1_serial`           |                209 gso/s |                250 gso/s |                270 gso/s |
-| `nk_dots_symmetric_u1_serial`        |                165 gso/s |                314 gso/s |                395 gso/s |
-| `nk_dots_packed_u1_v128relaxed`      |                603 gso/s |                736 gso/s |                872 gso/s |
-| `nk_dots_symmetric_u1_v128relaxed`   |                182 gso/s |                359 gso/s |                497 gso/s |
+| `nk_dots_packed_u1_serial`           |                236 gso/s |                265 gso/s |                311 gso/s |
+| `nk_dots_symmetric_u1_serial`        |                173 gso/s |                321 gso/s |                443 gso/s |
+| `nk_dots_packed_u1_v128relaxed`      |                598 gso/s |                804 gso/s |                871 gso/s |
+| `nk_dots_symmetric_u1_v128relaxed`   |                183 gso/s |                390 gso/s |                543 gso/s |

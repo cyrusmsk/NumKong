@@ -94,11 +94,11 @@ extern "C" {
 #define nk_define_dot_(input_type, accumulator_type, output_type, load_and_convert)                         \
     NK_PUBLIC void nk_dot_##input_type##_serial(nk_##input_type##_t const *a, nk_##input_type##_t const *b, \
                                                 nk_size_t n, nk_##output_type##_t *result) {                \
-        nk_##accumulator_type##_t sum = 0, a_val, b_val;                                                    \
+        nk_##accumulator_type##_t sum = 0, a_value, b_value;                                                \
         for (nk_size_t i = 0; i != n; ++i) {                                                                \
-            load_and_convert(a + i, &a_val);                                                                \
-            load_and_convert(b + i, &b_val);                                                                \
-            sum += a_val * b_val;                                                                           \
+            load_and_convert(a + i, &a_value);                                                              \
+            load_and_convert(b + i, &b_value);                                                              \
+            sum += a_value * b_value;                                                                       \
         }                                                                                                   \
         *result = (nk_##output_type##_t)sum;                                                                \
     }
@@ -139,15 +139,24 @@ extern "C" {
         result->imag = sum_imag;                                                                            \
     }
 
-#pragma region - Traditional Floats
+/*  Keep the serial instantiations below actually scalar, regardless of build type.
+ *  See dots/serial.h for rationale. */
+#if defined(__clang__)
+#pragma clang attribute push(__attribute__((noinline)), apply_to = function)
+#elif defined(__GNUC__)
+#pragma GCC push_options
+#pragma GCC optimize("no-tree-vectorize", "no-tree-slp-vectorize", "no-ipa-cp-clone", "no-inline")
+#endif
+
+#pragma region F32 and F64 Floats
 
 nk_define_dot_(f32, f64, f64, nk_assign_from_to_)            // nk_dot_f32_serial
 nk_define_dot_complex_(f32c, f64, f64c, nk_assign_from_to_)  // nk_dot_f32c_serial
 nk_define_vdot_complex_(f32c, f64, f64c, nk_assign_from_to_) // nk_vdot_f32c_serial
 
-#pragma endregion - Traditional Floats
+#pragma endregion F32 and F64 Floats
 
-#pragma region - Smaller Floats
+#pragma region F16 and BF16 Floats
 
 nk_define_dot_(f16, f32, f32, nk_f16_to_f32_serial)            // nk_dot_f16_serial
 nk_define_dot_complex_(f16c, f32, f32c, nk_f16_to_f32_serial)  // nk_dot_f16c_serial
@@ -162,9 +171,9 @@ nk_define_dot_(e5m2, f32, f32, nk_e5m2_to_f32_serial) // nk_dot_e5m2_serial
 nk_define_dot_(e2m3, f32, f32, nk_e2m3_to_f32_serial) // nk_dot_e2m3_serial
 nk_define_dot_(e3m2, f32, f32, nk_e3m2_to_f32_serial) // nk_dot_e3m2_serial
 
-#pragma endregion - Smaller Floats
+#pragma endregion F16 and BF16 Floats
 
-#pragma region - Small Integers
+#pragma region I8 and U8 Integers
 
 nk_define_dot_(i8, i32, i32, nk_assign_from_to_) // nk_dot_i8_serial
 nk_define_dot_(u8, u32, u32, nk_assign_from_to_) // nk_dot_u8_serial
@@ -207,9 +216,9 @@ NK_PUBLIC void nk_dot_u4_serial(nk_u4x2_t const *a, nk_u4x2_t const *b, nk_size_
     *result = sum;
 }
 
-#pragma endregion - Small Integers
+#pragma endregion I8 and U8 Integers
 
-#pragma region - Traditional Floats
+#pragma region F32 and F64 Floats
 
 /*  Double-precision dot-produce variants
  *
@@ -325,9 +334,9 @@ NK_INTERNAL void nk_dot_f32x4_finalize_serial(                                  
     result->f64s[3] = state_d->sums[0] + state_d->sums[1] + state_d->sums[2] + state_d->sums[3];
 }
 
-#pragma endregion - Traditional Floats
+#pragma endregion F32 and F64 Floats
 
-#pragma region - Smaller Floats
+#pragma region F16 and BF16 Floats
 
 typedef struct nk_dot_f16x8_state_serial_t {
     nk_f32_t sums[4];
@@ -356,6 +365,36 @@ NK_INTERNAL void nk_dot_f16x8_update_serial(nk_dot_f16x8_state_serial_t *state, 
 NK_INTERNAL void nk_dot_f16x8_finalize_serial(                                              //
     nk_dot_f16x8_state_serial_t const *state_a, nk_dot_f16x8_state_serial_t const *state_b, //
     nk_dot_f16x8_state_serial_t const *state_c, nk_dot_f16x8_state_serial_t const *state_d, //
+    nk_size_t total_dimensions, nk_b128_vec_t *result) {
+    nk_unused_(total_dimensions);
+    result->f32s[0] = state_a->sums[0] + state_a->sums[1] + state_a->sums[2] + state_a->sums[3];
+    result->f32s[1] = state_b->sums[0] + state_b->sums[1] + state_b->sums[2] + state_b->sums[3];
+    result->f32s[2] = state_c->sums[0] + state_c->sums[1] + state_c->sums[2] + state_c->sums[3];
+    result->f32s[3] = state_d->sums[0] + state_d->sums[1] + state_d->sums[2] + state_d->sums[3];
+}
+
+typedef struct nk_dot_through_f32x4_state_serial_t {
+    nk_f32_t sums[4];
+} nk_dot_through_f32x4_state_serial_t;
+
+NK_INTERNAL void nk_dot_through_f32x4_init_serial(nk_dot_through_f32x4_state_serial_t *state) {
+    state->sums[0] = 0, state->sums[1] = 0, state->sums[2] = 0, state->sums[3] = 0;
+}
+
+NK_INTERNAL void nk_dot_through_f32x4_update_serial(nk_dot_through_f32x4_state_serial_t *state, nk_b128_vec_t a,
+                                                    nk_b128_vec_t b, nk_size_t depth_offset,
+                                                    nk_size_t active_dimensions) {
+    nk_unused_(depth_offset);
+    nk_unused_(active_dimensions);
+    state->sums[0] += a.f32s[0] * b.f32s[0];
+    state->sums[1] += a.f32s[1] * b.f32s[1];
+    state->sums[2] += a.f32s[2] * b.f32s[2];
+    state->sums[3] += a.f32s[3] * b.f32s[3];
+}
+
+NK_INTERNAL void nk_dot_through_f32x4_finalize_serial(                                                      //
+    nk_dot_through_f32x4_state_serial_t const *state_a, nk_dot_through_f32x4_state_serial_t const *state_b, //
+    nk_dot_through_f32x4_state_serial_t const *state_c, nk_dot_through_f32x4_state_serial_t const *state_d, //
     nk_size_t total_dimensions, nk_b128_vec_t *result) {
     nk_unused_(total_dimensions);
     result->f32s[0] = state_a->sums[0] + state_a->sums[1] + state_a->sums[2] + state_a->sums[3];
@@ -399,9 +438,9 @@ NK_INTERNAL void nk_dot_bf16x8_finalize_serial(                                 
     result->f32s[3] = state_d->sums[0] + state_d->sums[1] + state_d->sums[2] + state_d->sums[3];
 }
 
-#pragma endregion - Smaller Floats
+#pragma endregion F16 and BF16 Floats
 
-#pragma region - Small Integers
+#pragma region I8 and U8 Integers
 
 typedef struct nk_dot_i8x16_state_serial_t {
     nk_i64_t sums[2];
@@ -476,9 +515,9 @@ NK_INTERNAL void nk_dot_u8x16_finalize_serial(                                  
     result->u32s[3] = (nk_u32_t)(state_d->sums[0] + state_d->sums[1]);
 }
 
-#pragma endregion - Small Integers
+#pragma endregion I8 and U8 Integers
 
-#pragma region - Smaller Floats
+#pragma region F16 and BF16 Floats
 
 typedef struct nk_dot_e4m3x16_state_serial_t {
     nk_f32_t sums[4];
@@ -640,9 +679,9 @@ NK_INTERNAL void nk_dot_e3m2x16_finalize_serial(                                
     result->f32s[3] = state_d->sums[0] + state_d->sums[1] + state_d->sums[2] + state_d->sums[3];
 }
 
-#pragma endregion - Smaller Floats
+#pragma endregion F16 and BF16 Floats
 
-#pragma region - Small Integers
+#pragma region I8 and U8 Integers
 
 // U4x2 state: processes 16 nibbles (8 bytes = 64 bits) per update
 typedef struct nk_dot_u4x16_state_serial_t {
@@ -694,20 +733,26 @@ NK_INTERNAL void nk_dot_u4x16_finalize_serial(nk_dot_u4x16_state_serial_t const 
 }
 
 NK_INTERNAL void nk_load_i4x16_to_i8x16_serial_(void const *src, nk_b128_vec_t *dst) {
-    nk_i4_to_i8_serial_((nk_i4x2_t const *)src, dst->i8s, 16);
+    nk_i4x2_t const *pairs = (nk_i4x2_t const *)src;
+    for (nk_size_t i = 0; i < 8; ++i) nk_i4x2_to_i8x2_serial(&pairs[i], &dst->i8s[i * 2]);
 }
 
 NK_INTERNAL void nk_partial_load_i4x16_to_i8x16_serial_(void const *src, nk_b128_vec_t *dst, nk_size_t n) {
-    nk_i4_to_i8_serial_((nk_i4x2_t const *)src, dst->i8s, n);
+    nk_i4x2_t const *pairs = (nk_i4x2_t const *)src;
+    nk_size_t count_pairs = n / 2;
+    for (nk_size_t i = 0; i < count_pairs; ++i) nk_i4x2_to_i8x2_serial(&pairs[i], &dst->i8s[i * 2]);
     for (nk_size_t i = n; i < 16; ++i) dst->i8s[i] = 0;
 }
 
 NK_INTERNAL void nk_load_u4x16_to_u8x16_serial_(void const *src, nk_b128_vec_t *dst) {
-    nk_u4_to_u8_serial_((nk_u4x2_t const *)src, dst->u8s, 16);
+    nk_u4x2_t const *pairs = (nk_u4x2_t const *)src;
+    for (nk_size_t i = 0; i < 8; ++i) nk_u4x2_to_u8x2_serial(&pairs[i], &dst->u8s[i * 2]);
 }
 
 NK_INTERNAL void nk_partial_load_u4x16_to_u8x16_serial_(void const *src, nk_b128_vec_t *dst, nk_size_t n) {
-    nk_u4_to_u8_serial_((nk_u4x2_t const *)src, dst->u8s, n);
+    nk_u4x2_t const *pairs = (nk_u4x2_t const *)src;
+    nk_size_t count_pairs = n / 2;
+    for (nk_size_t i = 0; i < count_pairs; ++i) nk_u4x2_to_u8x2_serial(&pairs[i], &dst->u8s[i * 2]);
     for (nk_size_t i = n; i < 16; ++i) dst->u8s[i] = 0;
 }
 
@@ -759,9 +804,9 @@ NK_INTERNAL void nk_dot_i4x16_finalize_serial(nk_dot_i4x16_state_serial_t const 
     result->i32s[3] = (nk_i32_t)(state_d->sums[0] + state_d->sums[1]);
 }
 
-#pragma endregion - Small Integers
+#pragma endregion I8 and U8 Integers
 
-#pragma region - Binary
+#pragma region Binary
 
 NK_PUBLIC void nk_dot_u1_serial(nk_u1x8_t const *a, nk_u1x8_t const *b, nk_size_t n_bits, nk_u32_t *result) {
     nk_u32_t dot = 0;
@@ -798,7 +843,7 @@ NK_INTERNAL void nk_dot_u1x128_finalize_serial(nk_dot_u1x128_state_serial_t cons
     result->u32s[3] = state_d->dot_count;
 }
 
-#pragma endregion - Binary
+#pragma endregion Binary
 
 /**
  *  Serial fallback sum helpers for progressive element-sum accumulation.
@@ -806,7 +851,7 @@ NK_INTERNAL void nk_dot_u1x128_finalize_serial(nk_dot_u1x128_state_serial_t cons
  *  on the depth loop's already-loaded vectors, avoiding a separate sum pass.
  */
 
-#pragma region - Stateful Element Sum Helpers (for compensated GEMM)
+#pragma region Stateful Element Sum Helpers (for compensated GEMM)
 
 /* i4x32: Haswell i4 (nk_b128_vec_t containing 32 nibbles in 16 bytes) */
 typedef struct nk_sum_i4x32_state_serial_t {
@@ -818,8 +863,8 @@ NK_INTERNAL void nk_sum_i4x32_init_serial(nk_sum_i4x32_state_serial_t *state) { 
 NK_INTERNAL void nk_sum_i4x32_update_serial(nk_sum_i4x32_state_serial_t *state, nk_b128_vec_t v) {
     nk_u8_t const *d = (nk_u8_t const *)&v;
     for (int i = 0; i < 16; i++) {
-        nk_i8_t low = (nk_i8_t)((d[i] & 0x0F) ^ 0x08) - 8; /* sign-extend low nibble */
-        nk_i8_t high = (nk_i8_t)((d[i] >> 4) ^ 0x08) - 8;  /* sign-extend high nibble */
+        nk_i8_t low = (nk_i8_t)((d[i] & 0x0F) ^ 0x08) - 8; // sign-extend low nibble
+        nk_i8_t high = (nk_i8_t)((d[i] >> 4) ^ 0x08) - 8;  // sign-extend high nibble
         state->sum += low + high;
     }
 }
@@ -829,7 +874,13 @@ NK_INTERNAL nk_i32_t nk_sum_i4x32_finalize_serial(nk_sum_i4x32_state_serial_t co
     return (nk_i32_t)state->sum;
 }
 
-#pragma endregion - Stateful Element Sum Helpers
+#pragma endregion Stateful Element Sum Helpers
+
+#if defined(__clang__)
+#pragma clang attribute pop
+#elif defined(__GNUC__)
+#pragma GCC pop_options
+#endif
 
 #if defined(__cplusplus)
 } // extern "C"

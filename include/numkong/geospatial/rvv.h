@@ -33,7 +33,7 @@
 #ifndef NK_GEOSPATIAL_RVV_H
 #define NK_GEOSPATIAL_RVV_H
 
-#if NK_TARGET_RISCV_
+#if NK_TARGET_RISCV64_
 #if NK_TARGET_RVV
 
 #include "numkong/types.h"
@@ -54,7 +54,7 @@ extern "C" {
  *  These require RVV trigonometric kernels from trigonometry/rvv.h.
  */
 
-#pragma region - Haversine Distance
+#pragma region Haversine Distance
 
 /**
  *  @brief  RVV internal kernel for Haversine distance on vector_length f64 point pairs.
@@ -196,9 +196,9 @@ NK_PUBLIC void nk_haversine_f32_rvv(                //
     }
 }
 
-#pragma endregion - Haversine Distance
+#pragma endregion Haversine Distance
 
-#pragma region - Vincenty Distance
+#pragma region Vincenty Distance
 
 /**
  *  @brief  RVV internal kernel for Vincenty's geodesic distance on vector_length f64 point pairs.
@@ -684,7 +684,7 @@ NK_PUBLIC void nk_vincenty_f32_rvv(                 //
     }
 }
 
-#pragma endregion - Vincenty Distance
+#pragma endregion Vincenty Distance
 
 #if defined(__cplusplus)
 } // extern "C"
@@ -697,5 +697,5 @@ NK_PUBLIC void nk_vincenty_f32_rvv(                 //
 #endif
 
 #endif // NK_TARGET_RVV
-#endif // NK_TARGET_RISCV_
+#endif // NK_TARGET_RISCV64_
 #endif // NK_GEOSPATIAL_RVV_H

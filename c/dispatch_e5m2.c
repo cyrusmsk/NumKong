@@ -15,6 +15,9 @@ void nk_dispatch_e5m2_find_(nk_capability_t v, nk_kernel_kind_t k, nk_kernel_pun
             return;
         case nk_kernel_reduce_minmax_k: *m = (m_t)&nk_reduce_minmax_e5m2_v128relaxed, *c = nk_cap_v128relaxed_k; return;
         case nk_kernel_dot_k: *m = (m_t)&nk_dot_e5m2_v128relaxed, *c = nk_cap_v128relaxed_k; return;
+        case nk_kernel_angular_k: *m = (m_t)&nk_angular_e5m2_v128relaxed, *c = nk_cap_v128relaxed_k; return;
+        case nk_kernel_euclidean_k: *m = (m_t)&nk_euclidean_e5m2_v128relaxed, *c = nk_cap_v128relaxed_k; return;
+        case nk_kernel_sqeuclidean_k: *m = (m_t)&nk_sqeuclidean_e5m2_v128relaxed, *c = nk_cap_v128relaxed_k; return;
         case nk_kernel_dots_packed_size_k:
             *m = (m_t)&nk_dots_packed_size_e5m2_v128relaxed, *c = nk_cap_v128relaxed_k;
             return;
@@ -48,6 +51,27 @@ void nk_dispatch_e5m2_find_(nk_capability_t v, nk_kernel_kind_t k, nk_kernel_pun
         case nk_kernel_angulars_symmetric_k: *m = (m_t)&nk_angulars_symmetric_e5m2_sme, *c = nk_cap_sme_k; return;
         case nk_kernel_euclideans_packed_k: *m = (m_t)&nk_euclideans_packed_e5m2_sme, *c = nk_cap_sme_k; return;
         case nk_kernel_euclideans_symmetric_k: *m = (m_t)&nk_euclideans_symmetric_e5m2_sme, *c = nk_cap_sme_k; return;
+        default: break;
+        }
+#endif
+#if NK_TARGET_NEONFP8
+    if (v & nk_cap_neonfp8_k) switch (k) {
+        case nk_kernel_dot_k: *m = (m_t)&nk_dot_e5m2_neonfp8, *c = nk_cap_neonfp8_k; return;
+        case nk_kernel_angular_k: *m = (m_t)&nk_angular_e5m2_neonfp8, *c = nk_cap_neonfp8_k; return;
+        case nk_kernel_euclidean_k: *m = (m_t)&nk_euclidean_e5m2_neonfp8, *c = nk_cap_neonfp8_k; return;
+        case nk_kernel_sqeuclidean_k: *m = (m_t)&nk_sqeuclidean_e5m2_neonfp8, *c = nk_cap_neonfp8_k; return;
+        case nk_kernel_dots_packed_size_k: *m = (m_t)&nk_dots_packed_size_e5m2_neonfp8, *c = nk_cap_neonfp8_k; return;
+        case nk_kernel_dots_pack_k: *m = (m_t)&nk_dots_pack_e5m2_neonfp8, *c = nk_cap_neonfp8_k; return;
+        case nk_kernel_dots_packed_k: *m = (m_t)&nk_dots_packed_e5m2_neonfp8, *c = nk_cap_neonfp8_k; return;
+        case nk_kernel_dots_symmetric_k: *m = (m_t)&nk_dots_symmetric_e5m2_neonfp8, *c = nk_cap_neonfp8_k; return;
+        case nk_kernel_angulars_packed_k: *m = (m_t)&nk_angulars_packed_e5m2_neonfp8, *c = nk_cap_neonfp8_k; return;
+        case nk_kernel_angulars_symmetric_k:
+            *m = (m_t)&nk_angulars_symmetric_e5m2_neonfp8, *c = nk_cap_neonfp8_k;
+            return;
+        case nk_kernel_euclideans_packed_k: *m = (m_t)&nk_euclideans_packed_e5m2_neonfp8, *c = nk_cap_neonfp8_k; return;
+        case nk_kernel_euclideans_symmetric_k:
+            *m = (m_t)&nk_euclideans_symmetric_e5m2_neonfp8, *c = nk_cap_neonfp8_k;
+            return;
         default: break;
         }
 #endif
@@ -89,6 +113,29 @@ void nk_dispatch_e5m2_find_(nk_capability_t v, nk_kernel_kind_t k, nk_kernel_pun
         default: break;
         }
 #endif
+#if NK_TARGET_GRANITEAMX
+    if (v & nk_cap_graniteamx_k) switch (k) {
+        case nk_kernel_dots_packed_size_k:
+            *m = (m_t)&nk_dots_packed_size_e5m2_graniteamx, *c = nk_cap_graniteamx_k;
+            return;
+        case nk_kernel_dots_pack_k: *m = (m_t)&nk_dots_pack_e5m2_graniteamx, *c = nk_cap_graniteamx_k; return;
+        case nk_kernel_dots_packed_k: *m = (m_t)&nk_dots_packed_e5m2_graniteamx, *c = nk_cap_graniteamx_k; return;
+        case nk_kernel_angulars_packed_k:
+            *m = (m_t)&nk_angulars_packed_e5m2_graniteamx, *c = nk_cap_graniteamx_k;
+            return;
+        case nk_kernel_euclideans_packed_k:
+            *m = (m_t)&nk_euclideans_packed_e5m2_graniteamx, *c = nk_cap_graniteamx_k;
+            return;
+        case nk_kernel_dots_symmetric_k: *m = (m_t)&nk_dots_symmetric_e5m2_graniteamx, *c = nk_cap_graniteamx_k; return;
+        case nk_kernel_angulars_symmetric_k:
+            *m = (m_t)&nk_angulars_symmetric_e5m2_graniteamx, *c = nk_cap_graniteamx_k;
+            return;
+        case nk_kernel_euclideans_symmetric_k:
+            *m = (m_t)&nk_euclideans_symmetric_e5m2_graniteamx, *c = nk_cap_graniteamx_k;
+            return;
+        default: break;
+        }
+#endif
 #if NK_TARGET_SAPPHIREAMX
     if (v & nk_cap_sapphireamx_k) switch (k) {
         case nk_kernel_dots_packed_size_k:
@@ -114,12 +161,30 @@ void nk_dispatch_e5m2_find_(nk_capability_t v, nk_kernel_kind_t k, nk_kernel_pun
         default: break;
         }
 #endif
+#if NK_TARGET_DIAMOND
+    if (v & nk_cap_diamond_k) switch (k) {
+        case nk_kernel_dot_k: *m = (m_t)&nk_dot_e5m2_diamond, *c = nk_cap_diamond_k; return;
+        case nk_kernel_euclidean_k: *m = (m_t)&nk_euclidean_e5m2_diamond, *c = nk_cap_diamond_k; return;
+        case nk_kernel_sqeuclidean_k: *m = (m_t)&nk_sqeuclidean_e5m2_diamond, *c = nk_cap_diamond_k; return;
+        case nk_kernel_angular_k: *m = (m_t)&nk_angular_e5m2_diamond, *c = nk_cap_diamond_k; return;
+        case nk_kernel_dots_packed_size_k: *m = (m_t)&nk_dots_packed_size_e5m2_diamond, *c = nk_cap_diamond_k; return;
+        case nk_kernel_dots_pack_k: *m = (m_t)&nk_dots_pack_e5m2_diamond, *c = nk_cap_diamond_k; return;
+        case nk_kernel_dots_packed_k: *m = (m_t)&nk_dots_packed_e5m2_diamond, *c = nk_cap_diamond_k; return;
+        case nk_kernel_dots_symmetric_k: *m = (m_t)&nk_dots_symmetric_e5m2_diamond, *c = nk_cap_diamond_k; return;
+        case nk_kernel_angulars_packed_k: *m = (m_t)&nk_angulars_packed_e5m2_diamond, *c = nk_cap_diamond_k; return;
+        case nk_kernel_angulars_symmetric_k:
+            *m = (m_t)&nk_angulars_symmetric_e5m2_diamond, *c = nk_cap_diamond_k;
+            return;
+        case nk_kernel_euclideans_packed_k: *m = (m_t)&nk_euclideans_packed_e5m2_diamond, *c = nk_cap_diamond_k; return;
+        case nk_kernel_euclideans_symmetric_k:
+            *m = (m_t)&nk_euclideans_symmetric_e5m2_diamond, *c = nk_cap_diamond_k;
+            return;
+        default: break;
+        }
+#endif
 #if NK_TARGET_GENOA
     if (v & nk_cap_genoa_k) switch (k) {
         case nk_kernel_dot_k: *m = (m_t)&nk_dot_e5m2_genoa, *c = nk_cap_genoa_k; return;
-        case nk_kernel_euclidean_k: *m = (m_t)&nk_euclidean_e5m2_genoa, *c = nk_cap_genoa_k; return;
-        case nk_kernel_sqeuclidean_k: *m = (m_t)&nk_sqeuclidean_e5m2_genoa, *c = nk_cap_genoa_k; return;
-        case nk_kernel_angular_k: *m = (m_t)&nk_angular_e5m2_genoa, *c = nk_cap_genoa_k; return;
         case nk_kernel_dots_packed_size_k: *m = (m_t)&nk_dots_packed_size_e5m2_genoa, *c = nk_cap_genoa_k; return;
         case nk_kernel_dots_pack_k: *m = (m_t)&nk_dots_pack_e5m2_genoa, *c = nk_cap_genoa_k; return;
         case nk_kernel_dots_packed_k: *m = (m_t)&nk_dots_packed_e5m2_genoa, *c = nk_cap_genoa_k; return;

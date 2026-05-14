@@ -9,7 +9,7 @@
 #ifndef NK_REDUCE_NEONFHM_H
 #define NK_REDUCE_NEONFHM_H
 
-#if NK_TARGET_ARM_
+#if NK_TARGET_ARM64_
 #if NK_TARGET_NEONFHM
 
 #include "numkong/types.h"         // `nk_e4m3_t`
@@ -34,11 +34,11 @@ NK_INTERNAL void nk_reduce_moments_e4m3_neonfhm_contiguous_( //
 
     float32x4_t sum_f32x4 = vdupq_n_f32(0);
     float32x4_t sumsq_f32x4 = vdupq_n_f32(0);
-    float16x8_t ones_f16x8 = vreinterpretq_f16_u16(vdupq_n_u16(0x3C00));
+    float16x8_t ones_f16x8 = vreinterpretq_f16_u16(nk_u16x8_splat_(0x3C00));
     nk_size_t idx = 0;
 
     for (; idx + 8 <= count; idx += 8) {
-        uint8x8_t data_u8x8 = vld1_u8((uint8_t const *)(data_ptr + idx));
+        uint8x8_t data_u8x8 = vld1_u8((nk_u8_t const *)(data_ptr + idx));
         float16x8_t data_f16x8 = nk_e4m3x8_to_f16x8_neon_(data_u8x8);
         sum_f32x4 = vfmlalq_low_f16(sum_f32x4, data_f16x8, ones_f16x8);
         sum_f32x4 = vfmlalq_high_f16(sum_f32x4, data_f16x8, ones_f16x8);
@@ -67,11 +67,11 @@ NK_INTERNAL void nk_reduce_moments_e4m3_neonfhm_strided_(                  //
 
     float32x4_t sum_f32x4 = vdupq_n_f32(0);
     float32x4_t sumsq_f32x4 = vdupq_n_f32(0);
-    float16x8_t ones_f16x8 = vreinterpretq_f16_u16(vdupq_n_u16(0x3C00));
+    float16x8_t ones_f16x8 = vreinterpretq_f16_u16(nk_u16x8_splat_(0x3C00));
     nk_size_t idx = 0;
 
     if (stride_elements == 2) {
-        for (; idx + 8 <= count; idx += 8) {
+        for (; idx + 8 < count; idx += 8) {
             uint8x8x2_t loaded = vld2_u8((nk_u8_t const *)(data_ptr + idx * 2));
             float16x8_t data_f16x8 = nk_e4m3x8_to_f16x8_neon_(loaded.val[0]);
             sum_f32x4 = vfmlalq_low_f16(sum_f32x4, data_f16x8, ones_f16x8);
@@ -81,7 +81,7 @@ NK_INTERNAL void nk_reduce_moments_e4m3_neonfhm_strided_(                  //
         }
     }
     else if (stride_elements == 3) {
-        for (; idx + 8 <= count; idx += 8) {
+        for (; idx + 8 < count; idx += 8) {
             uint8x8x3_t loaded = vld3_u8((nk_u8_t const *)(data_ptr + idx * 3));
             float16x8_t data_f16x8 = nk_e4m3x8_to_f16x8_neon_(loaded.val[0]);
             sum_f32x4 = vfmlalq_low_f16(sum_f32x4, data_f16x8, ones_f16x8);
@@ -91,7 +91,7 @@ NK_INTERNAL void nk_reduce_moments_e4m3_neonfhm_strided_(                  //
         }
     }
     else if (stride_elements == 4) {
-        for (; idx + 8 <= count; idx += 8) {
+        for (; idx + 8 < count; idx += 8) {
             uint8x8x4_t loaded = vld4_u8((nk_u8_t const *)(data_ptr + idx * 4));
             float16x8_t data_f16x8 = nk_e4m3x8_to_f16x8_neon_(loaded.val[0]);
             sum_f32x4 = vfmlalq_low_f16(sum_f32x4, data_f16x8, ones_f16x8);
@@ -159,11 +159,11 @@ NK_INTERNAL void nk_reduce_moments_e5m2_neonfhm_contiguous_( //
 
     float32x4_t sum_f32x4 = vdupq_n_f32(0);
     float32x4_t sumsq_f32x4 = vdupq_n_f32(0);
-    float16x8_t ones_f16x8 = vreinterpretq_f16_u16(vdupq_n_u16(0x3C00));
+    float16x8_t ones_f16x8 = vreinterpretq_f16_u16(nk_u16x8_splat_(0x3C00));
     nk_size_t idx = 0;
 
     for (; idx + 8 <= count; idx += 8) {
-        uint8x8_t data_u8x8 = vld1_u8((uint8_t const *)(data_ptr + idx));
+        uint8x8_t data_u8x8 = vld1_u8((nk_u8_t const *)(data_ptr + idx));
         float16x8_t data_f16x8 = nk_e5m2x8_to_f16x8_neon_(data_u8x8);
         sum_f32x4 = vfmlalq_low_f16(sum_f32x4, data_f16x8, ones_f16x8);
         sum_f32x4 = vfmlalq_high_f16(sum_f32x4, data_f16x8, ones_f16x8);
@@ -192,11 +192,11 @@ NK_INTERNAL void nk_reduce_moments_e5m2_neonfhm_strided_(                  //
 
     float32x4_t sum_f32x4 = vdupq_n_f32(0);
     float32x4_t sumsq_f32x4 = vdupq_n_f32(0);
-    float16x8_t ones_f16x8 = vreinterpretq_f16_u16(vdupq_n_u16(0x3C00));
+    float16x8_t ones_f16x8 = vreinterpretq_f16_u16(nk_u16x8_splat_(0x3C00));
     nk_size_t idx = 0;
 
     if (stride_elements == 2) {
-        for (; idx + 8 <= count; idx += 8) {
+        for (; idx + 8 < count; idx += 8) {
             uint8x8x2_t loaded = vld2_u8((nk_u8_t const *)(data_ptr + idx * 2));
             float16x8_t data_f16x8 = nk_e5m2x8_to_f16x8_neon_(loaded.val[0]);
             sum_f32x4 = vfmlalq_low_f16(sum_f32x4, data_f16x8, ones_f16x8);
@@ -206,7 +206,7 @@ NK_INTERNAL void nk_reduce_moments_e5m2_neonfhm_strided_(                  //
         }
     }
     else if (stride_elements == 3) {
-        for (; idx + 8 <= count; idx += 8) {
+        for (; idx + 8 < count; idx += 8) {
             uint8x8x3_t loaded = vld3_u8((nk_u8_t const *)(data_ptr + idx * 3));
             float16x8_t data_f16x8 = nk_e5m2x8_to_f16x8_neon_(loaded.val[0]);
             sum_f32x4 = vfmlalq_low_f16(sum_f32x4, data_f16x8, ones_f16x8);
@@ -216,7 +216,7 @@ NK_INTERNAL void nk_reduce_moments_e5m2_neonfhm_strided_(                  //
         }
     }
     else if (stride_elements == 4) {
-        for (; idx + 8 <= count; idx += 8) {
+        for (; idx + 8 < count; idx += 8) {
             uint8x8x4_t loaded = vld4_u8((nk_u8_t const *)(data_ptr + idx * 4));
             float16x8_t data_f16x8 = nk_e5m2x8_to_f16x8_neon_(loaded.val[0]);
             sum_f32x4 = vfmlalq_low_f16(sum_f32x4, data_f16x8, ones_f16x8);
@@ -289,5 +289,5 @@ NK_PUBLIC void nk_reduce_moments_e5m2_neonfhm(                          //
 #endif
 
 #endif // NK_TARGET_NEONFHM
-#endif // NK_TARGET_ARM_
+#endif // NK_TARGET_ARM64_
 #endif // NK_REDUCE_NEONFHM_H

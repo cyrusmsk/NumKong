@@ -29,10 +29,11 @@
 #ifndef NK_SPATIAL_NEONSDOT_H
 #define NK_SPATIAL_NEONSDOT_H
 
-#if NK_TARGET_ARM_
+#if NK_TARGET_ARM64_
 #if NK_TARGET_NEONSDOT
 
 #include "numkong/types.h"
+#include "numkong/cast/serial.h"  // `nk_partial_load_b4x32_serial_`
 #include "numkong/spatial/neon.h" // `nk_angular_normalize_f32_neon_`, `nk_f32_sqrt_neon`
 
 #if defined(__cplusplus)
@@ -194,7 +195,8 @@ NK_PUBLIC void nk_angular_i8_neonsdot(nk_i8_t const *a, nk_i8_t const *b, nk_siz
         b_norm_sq_i32 += b_element_i32 * b_element_i32;
     }
 
-    *result = nk_angular_normalize_f32_neon_(dot_product_i32, a_norm_sq_i32, b_norm_sq_i32);
+    *result = nk_angular_normalize_f32_neon_((nk_f32_t)dot_product_i32, (nk_f32_t)a_norm_sq_i32,
+                                             (nk_f32_t)b_norm_sq_i32);
 }
 
 NK_PUBLIC void nk_sqeuclidean_u8_neonsdot(nk_u8_t const *a, nk_u8_t const *b, nk_size_t n, nk_u32_t *result) {
@@ -242,7 +244,174 @@ NK_PUBLIC void nk_angular_u8_neonsdot(nk_u8_t const *a, nk_u8_t const *b, nk_siz
         ab += ai * bi, a2 += ai * ai, b2 += bi * bi;
     }
 
-    *result = nk_angular_normalize_f32_neon_(ab, a2, b2);
+    *result = nk_angular_normalize_f32_neon_((nk_f32_t)ab, (nk_f32_t)a2, (nk_f32_t)b2);
+}
+
+NK_PUBLIC void nk_sqeuclidean_i4_neonsdot(nk_i4x2_t const *a, nk_i4x2_t const *b, nk_size_t n, nk_u32_t *result) {
+    n = nk_size_round_up_to_multiple_(n, 2);
+    nk_size_t n_bytes = n / 2;
+    uint32x4_t d2_u32x4 = vdupq_n_u32(0);
+    uint8x16_t a_u8x16, b_u8x16;
+
+nk_sqeuclidean_i4_neonsdot_cycle:
+    if (n_bytes < 16) {
+        nk_b128_vec_t a_vec, b_vec;
+        nk_partial_load_b4x32_serial_(a, &a_vec, n_bytes * 2);
+        nk_partial_load_b4x32_serial_(b, &b_vec, n_bytes * 2);
+        a_u8x16 = a_vec.u8x16;
+        b_u8x16 = b_vec.u8x16;
+        n_bytes = 0;
+    }
+    else {
+        a_u8x16 = vld1q_u8((nk_u8_t const *)a);
+        b_u8x16 = vld1q_u8((nk_u8_t const *)b);
+        a += 16, b += 16, n_bytes -= 16;
+    }
+
+    // Sign-extend low nibbles, compute |a-b|, reinterpret as unsigned for UDOT squaring
+    int8x16_t a_low_i8x16 = vshrq_n_s8(vshlq_n_s8(vreinterpretq_s8_u8(a_u8x16), 4), 4);
+    int8x16_t b_low_i8x16 = vshrq_n_s8(vshlq_n_s8(vreinterpretq_s8_u8(b_u8x16), 4), 4);
+    int8x16_t a_high_i8x16 = vshrq_n_s8(vreinterpretq_s8_u8(a_u8x16), 4);
+    int8x16_t b_high_i8x16 = vshrq_n_s8(vreinterpretq_s8_u8(b_u8x16), 4);
+
+    uint8x16_t diff_low_u8x16 = vreinterpretq_u8_s8(vabdq_s8(a_low_i8x16, b_low_i8x16));
+    uint8x16_t diff_high_u8x16 = vreinterpretq_u8_s8(vabdq_s8(a_high_i8x16, b_high_i8x16));
+    d2_u32x4 = vdotq_u32(d2_u32x4, diff_low_u8x16, diff_low_u8x16);
+    d2_u32x4 = vdotq_u32(d2_u32x4, diff_high_u8x16, diff_high_u8x16);
+
+    if (n_bytes) goto nk_sqeuclidean_i4_neonsdot_cycle;
+    *result = vaddvq_u32(d2_u32x4);
+}
+
+NK_PUBLIC void nk_euclidean_i4_neonsdot(nk_i4x2_t const *a, nk_i4x2_t const *b, nk_size_t n, nk_f32_t *result) {
+    nk_u32_t d2;
+    nk_sqeuclidean_i4_neonsdot(a, b, n, &d2);
+    *result = nk_f32_sqrt_neon((nk_f32_t)d2);
+}
+
+NK_PUBLIC void nk_angular_i4_neonsdot(nk_i4x2_t const *a, nk_i4x2_t const *b, nk_size_t n, nk_f32_t *result) {
+    n = nk_size_round_up_to_multiple_(n, 2);
+    nk_size_t n_bytes = n / 2;
+    int32x4_t ab_i32x4 = vdupq_n_s32(0);
+    int32x4_t a2_i32x4 = vdupq_n_s32(0);
+    int32x4_t b2_i32x4 = vdupq_n_s32(0);
+    uint8x16_t a_u8x16, b_u8x16;
+
+nk_angular_i4_neonsdot_cycle:
+    if (n_bytes < 16) {
+        nk_b128_vec_t a_vec, b_vec;
+        nk_partial_load_b4x32_serial_(a, &a_vec, n_bytes * 2);
+        nk_partial_load_b4x32_serial_(b, &b_vec, n_bytes * 2);
+        a_u8x16 = a_vec.u8x16;
+        b_u8x16 = b_vec.u8x16;
+        n_bytes = 0;
+    }
+    else {
+        a_u8x16 = vld1q_u8((nk_u8_t const *)a);
+        b_u8x16 = vld1q_u8((nk_u8_t const *)b);
+        a += 16, b += 16, n_bytes -= 16;
+    }
+
+    int8x16_t a_low_i8x16 = vshrq_n_s8(vshlq_n_s8(vreinterpretq_s8_u8(a_u8x16), 4), 4);
+    int8x16_t b_low_i8x16 = vshrq_n_s8(vshlq_n_s8(vreinterpretq_s8_u8(b_u8x16), 4), 4);
+    int8x16_t a_high_i8x16 = vshrq_n_s8(vreinterpretq_s8_u8(a_u8x16), 4);
+    int8x16_t b_high_i8x16 = vshrq_n_s8(vreinterpretq_s8_u8(b_u8x16), 4);
+
+    ab_i32x4 = vdotq_s32(ab_i32x4, a_low_i8x16, b_low_i8x16);
+    ab_i32x4 = vdotq_s32(ab_i32x4, a_high_i8x16, b_high_i8x16);
+    a2_i32x4 = vdotq_s32(a2_i32x4, a_low_i8x16, a_low_i8x16);
+    a2_i32x4 = vdotq_s32(a2_i32x4, a_high_i8x16, a_high_i8x16);
+    b2_i32x4 = vdotq_s32(b2_i32x4, b_low_i8x16, b_low_i8x16);
+    b2_i32x4 = vdotq_s32(b2_i32x4, b_high_i8x16, b_high_i8x16);
+
+    if (n_bytes) goto nk_angular_i4_neonsdot_cycle;
+
+    *result = nk_angular_normalize_f32_neon_((nk_f32_t)vaddvq_s32(ab_i32x4), (nk_f32_t)vaddvq_s32(a2_i32x4),
+                                             (nk_f32_t)vaddvq_s32(b2_i32x4));
+}
+
+NK_PUBLIC void nk_sqeuclidean_u4_neonsdot(nk_u4x2_t const *a, nk_u4x2_t const *b, nk_size_t n, nk_u32_t *result) {
+    n = nk_size_round_up_to_multiple_(n, 2);
+    nk_size_t n_bytes = n / 2;
+    uint8x16_t const nibble_mask_u8x16 = vdupq_n_u8(0x0F);
+    uint32x4_t d2_u32x4 = vdupq_n_u32(0);
+    uint8x16_t a_u8x16, b_u8x16;
+
+nk_sqeuclidean_u4_neonsdot_cycle:
+    if (n_bytes < 16) {
+        nk_b128_vec_t a_vec, b_vec;
+        nk_partial_load_b4x32_serial_(a, &a_vec, n_bytes * 2);
+        nk_partial_load_b4x32_serial_(b, &b_vec, n_bytes * 2);
+        a_u8x16 = a_vec.u8x16;
+        b_u8x16 = b_vec.u8x16;
+        n_bytes = 0;
+    }
+    else {
+        a_u8x16 = vld1q_u8((nk_u8_t const *)a);
+        b_u8x16 = vld1q_u8((nk_u8_t const *)b);
+        a += 16, b += 16, n_bytes -= 16;
+    }
+
+    uint8x16_t a_low_u8x16 = vandq_u8(a_u8x16, nibble_mask_u8x16);
+    uint8x16_t a_high_u8x16 = vshrq_n_u8(a_u8x16, 4);
+    uint8x16_t b_low_u8x16 = vandq_u8(b_u8x16, nibble_mask_u8x16);
+    uint8x16_t b_high_u8x16 = vshrq_n_u8(b_u8x16, 4);
+
+    uint8x16_t diff_low_u8x16 = vabdq_u8(a_low_u8x16, b_low_u8x16);
+    uint8x16_t diff_high_u8x16 = vabdq_u8(a_high_u8x16, b_high_u8x16);
+    d2_u32x4 = vdotq_u32(d2_u32x4, diff_low_u8x16, diff_low_u8x16);
+    d2_u32x4 = vdotq_u32(d2_u32x4, diff_high_u8x16, diff_high_u8x16);
+
+    if (n_bytes) goto nk_sqeuclidean_u4_neonsdot_cycle;
+    *result = vaddvq_u32(d2_u32x4);
+}
+
+NK_PUBLIC void nk_euclidean_u4_neonsdot(nk_u4x2_t const *a, nk_u4x2_t const *b, nk_size_t n, nk_f32_t *result) {
+    nk_u32_t d2;
+    nk_sqeuclidean_u4_neonsdot(a, b, n, &d2);
+    *result = nk_f32_sqrt_neon((nk_f32_t)d2);
+}
+
+NK_PUBLIC void nk_angular_u4_neonsdot(nk_u4x2_t const *a, nk_u4x2_t const *b, nk_size_t n, nk_f32_t *result) {
+    n = nk_size_round_up_to_multiple_(n, 2);
+    nk_size_t n_bytes = n / 2;
+    uint8x16_t const nibble_mask_u8x16 = vdupq_n_u8(0x0F);
+    uint32x4_t ab_u32x4 = vdupq_n_u32(0);
+    uint32x4_t a2_u32x4 = vdupq_n_u32(0);
+    uint32x4_t b2_u32x4 = vdupq_n_u32(0);
+    uint8x16_t a_u8x16, b_u8x16;
+
+nk_angular_u4_neonsdot_cycle:
+    if (n_bytes < 16) {
+        nk_b128_vec_t a_vec, b_vec;
+        nk_partial_load_b4x32_serial_(a, &a_vec, n_bytes * 2);
+        nk_partial_load_b4x32_serial_(b, &b_vec, n_bytes * 2);
+        a_u8x16 = a_vec.u8x16;
+        b_u8x16 = b_vec.u8x16;
+        n_bytes = 0;
+    }
+    else {
+        a_u8x16 = vld1q_u8((nk_u8_t const *)a);
+        b_u8x16 = vld1q_u8((nk_u8_t const *)b);
+        a += 16, b += 16, n_bytes -= 16;
+    }
+
+    uint8x16_t a_low_u8x16 = vandq_u8(a_u8x16, nibble_mask_u8x16);
+    uint8x16_t a_high_u8x16 = vshrq_n_u8(a_u8x16, 4);
+    uint8x16_t b_low_u8x16 = vandq_u8(b_u8x16, nibble_mask_u8x16);
+    uint8x16_t b_high_u8x16 = vshrq_n_u8(b_u8x16, 4);
+
+    ab_u32x4 = vdotq_u32(ab_u32x4, a_low_u8x16, b_low_u8x16);
+    ab_u32x4 = vdotq_u32(ab_u32x4, a_high_u8x16, b_high_u8x16);
+    a2_u32x4 = vdotq_u32(a2_u32x4, a_low_u8x16, a_low_u8x16);
+    a2_u32x4 = vdotq_u32(a2_u32x4, a_high_u8x16, a_high_u8x16);
+    b2_u32x4 = vdotq_u32(b2_u32x4, b_low_u8x16, b_low_u8x16);
+    b2_u32x4 = vdotq_u32(b2_u32x4, b_high_u8x16, b_high_u8x16);
+
+    if (n_bytes) goto nk_angular_u4_neonsdot_cycle;
+
+    *result = nk_angular_normalize_f32_neon_((nk_f32_t)vaddvq_u32(ab_u32x4), (nk_f32_t)vaddvq_u32(a2_u32x4),
+                                             (nk_f32_t)vaddvq_u32(b2_u32x4));
 }
 
 #if defined(__clang__)
@@ -256,5 +425,5 @@ NK_PUBLIC void nk_angular_u8_neonsdot(nk_u8_t const *a, nk_u8_t const *b, nk_siz
 #endif
 
 #endif // NK_TARGET_NEONSDOT
-#endif // NK_TARGET_ARM_
+#endif // NK_TARGET_ARM64_
 #endif // NK_SPATIAL_NEONSDOT_H

@@ -15,6 +15,29 @@
 extern "C" {
 #endif
 
+/*  Keep the serial instantiations below actually scalar, regardless of build type.
+ *  Without this, -O3 + LTO can vectorize or clone the serial kernels under AVX-512
+ *  callers in dispatch_*.c, which wastes binary and breaks the nk_*_serial-as-scalar-oracle
+ *  contract that tests and numerical-stability docs rely on. See dots/serial.h. */
+#if defined(__clang__)
+#pragma clang attribute push(__attribute__((noinline)), apply_to = function)
+#elif defined(__GNUC__)
+#pragma GCC push_options
+#pragma GCC optimize("no-tree-vectorize", "no-tree-slp-vectorize", "no-ipa-cp-clone", "no-inline")
+#endif
+
+/* Size bias for release. Gated on NDEBUG so Debug builds keep -O0 for stepping. */
+#if defined(NDEBUG)
+#if defined(_MSC_VER)
+#pragma optimize("s", on)
+#elif defined(__clang__)
+#pragma clang attribute push(__attribute__((minsize)), apply_to = function)
+#elif defined(__GNUC__)
+#pragma GCC push_options
+#pragma GCC optimize("Os")
+#endif
+#endif
+
 nk_define_cross_normalized_packed_(angular, f64, serial, f64, f64, f64, /*norm_value_type=*/f64, f64, nk_b256_vec_t,
                                    nk_dots_packed_f64_serial, nk_angular_through_f64_from_dot_serial_,
                                    nk_dots_reduce_sumsq_f64_, nk_load_b256_serial_, nk_partial_load_b64x4_serial_,
@@ -49,11 +72,11 @@ nk_define_cross_normalized_symmetric_(euclidean, f32, serial, f32, f64, /*norm_v
                                       nk_dots_reduce_sumsq_f32_, nk_load_b256_serial_, nk_partial_load_b64x4_serial_,
                                       nk_store_b256_serial_, nk_partial_store_b64x4_serial_, 1)
 
-nk_define_cross_normalized_packed_(angular, f16, serial, f16, f16, f32, /*norm_value_type=*/f32, f32, nk_b128_vec_t,
+nk_define_cross_normalized_packed_(angular, f16, serial, f16, f32, f32, /*norm_value_type=*/f32, f32, nk_b128_vec_t,
                                    nk_dots_packed_f16_serial, nk_angular_through_f32_from_dot_serial_,
                                    nk_dots_reduce_sumsq_f16_, nk_load_b128_serial_, nk_partial_load_b32x4_serial_,
                                    nk_store_b128_serial_, nk_partial_store_b32x4_serial_, 1)
-nk_define_cross_normalized_packed_(euclidean, f16, serial, f16, f16, f32, /*norm_value_type=*/f32, f32, nk_b128_vec_t,
+nk_define_cross_normalized_packed_(euclidean, f16, serial, f16, f32, f32, /*norm_value_type=*/f32, f32, nk_b128_vec_t,
                                    nk_dots_packed_f16_serial, nk_euclidean_through_f32_from_dot_serial_,
                                    nk_dots_reduce_sumsq_f16_, nk_load_b128_serial_, nk_partial_load_b32x4_serial_,
                                    nk_store_b128_serial_, nk_partial_store_b32x4_serial_, 1)
@@ -218,6 +241,22 @@ nk_define_cross_normalized_symmetric_(euclidean, u4, serial, u4x2, u32, /*norm_v
                                       nk_dots_symmetric_u4_serial, nk_euclidean_through_u32_from_dot_serial_,
                                       nk_dots_reduce_sumsq_u4_, nk_load_b128_serial_, nk_partial_load_b32x4_serial_,
                                       nk_store_b128_serial_, nk_partial_store_b32x4_serial_, 2)
+
+#if defined(NDEBUG)
+#if defined(_MSC_VER)
+#pragma optimize("", on)
+#elif defined(__clang__)
+#pragma clang attribute pop
+#elif defined(__GNUC__)
+#pragma GCC pop_options
+#endif
+#endif
+
+#if defined(__clang__)
+#pragma clang attribute pop
+#elif defined(__GNUC__)
+#pragma GCC pop_options
+#endif
 
 #if defined(__cplusplus)
 } // extern "C"

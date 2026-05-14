@@ -47,7 +47,30 @@
 #     cmake -B build_android -D CMAKE_TOOLCHAIN_FILE=cmake/toolchain-android-arm64.cmake \
 #           -D NK_BUILD_SHARED=ON
 #
-cmake_minimum_required(VERSION 3.14 FATAL_ERROR)
+# To build with Intel ICX (Intel oneAPI DPC++/C++ Compiler):
+#
+#     sudo apt-get install -y intel-oneapi-compiler-dpcpp-cpp
+#     source /opt/intel/oneapi/setvars.sh
+#     cmake -B build_icx -D CMAKE_BUILD_TYPE=Release \
+#           -D CMAKE_C_COMPILER=icx -D CMAKE_CXX_COMPILER=icpx \
+#           -D NK_BUILD_TEST=ON
+#     cmake --build build_icx --config Release
+#
+# To build the CUDA interop test (test/test.cu); see that file's docstring for what it covers and the
+# GPU compatibility notes. Requires nvcc on PATH.
+#
+#     cmake -B build_cuda -D NK_BUILD_CUDA_TEST=ON
+#     cmake --build build_cuda
+#     ctest --test-dir build_cuda -R cuda --output-on-failure
+#
+# If your system CMake is older than 3.20, install a recent release from PyPI or the Kitware APT repo.
+#
+#     python -m pip install "cmake>=3.20"
+#
+# NumKong does not support NVHPC (nvc and nvc++): those compilers cannot apply per-function
+# __attribute__((target(...))), which is how SIMD kernels are dispatched in this library.
+#
+cmake_minimum_required(VERSION 3.20 FATAL_ERROR)
 
 # Leverage `ccache` for incremental compilation
 find_program(CCACHE_PROGRAM ccache)
@@ -62,7 +85,7 @@ endif ()
 #
 project(
     numkong
-    VERSION 7.1.1
+    VERSION 7.6.0
     LANGUAGES C CXX
     DESCRIPTION "Portable mixed-precision BLAS-like vector math library for x86 and ARM"
     HOMEPAGE_URL "https://github.com/ashvardanian/NumKong"
@@ -78,7 +101,7 @@ else ()
     set(CMAKE_C_EXTENSIONS NO)
 endif ()
 
-set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 set(CMAKE_CXX_EXTENSIONS NO)
 
@@ -95,13 +118,16 @@ if (CMAKE_SYSTEM_NAME STREQUAL "WASI")
 endif ()
 
 option(NK_BUILD_SHARED "Compile a dynamic library" ${NK_IS_MAIN_PROJECT_})
-option(NK_BUILD_SHARED_TEST "Compile shared-library tests (requires NK_BUILD_SHARED)" OFF)
 option(NK_BUILD_TEST "Compile precision tests with ULP-based error analysis" OFF)
 option(NK_BUILD_BENCH "Compile micro-benchmarks for current ISA" OFF)
+option(NK_BUILD_CUDA_TEST "Compile CUDA tensors & type system interop tests" OFF)
+option(NK_BUILD_SHARED_TEST "Compile shared-library tests, requires NK_BUILD_SHARED" OFF)
 option(NK_WASI_HOSTED "Import capability probes from WASI host environment" OFF)
 
+option(NK_MARCH_NATIVE "Build with -march=native (host-tuned, not portable)" OFF)
+
 # `add_test()` entries are only generated when testing is enabled.
-if (NK_BUILD_TEST OR NK_BUILD_SHARED_TEST)
+if (NK_BUILD_TEST OR NK_BUILD_SHARED_TEST OR NK_BUILD_CUDA_TEST)
     enable_testing()
 endif ()
 
@@ -143,6 +169,12 @@ elseif (CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|AARCH64|arm64|ARM64")
 elseif (CMAKE_SYSTEM_PROCESSOR MATCHES "riscv64|RISCV64")
     set(NK_IS_64BIT_RISCV_ TRUE)
     message(STATUS "NumKong Platform: RISC-V 64 (CMAKE_SYSTEM_PROCESSOR=${CMAKE_SYSTEM_PROCESSOR})")
+elseif (CMAKE_SYSTEM_PROCESSOR MATCHES "loongarch64|LOONGARCH64")
+    set(NK_IS_64BIT_LOONGARCH_ TRUE)
+    message(STATUS "NumKong Platform: LoongArch 64 (CMAKE_SYSTEM_PROCESSOR=${CMAKE_SYSTEM_PROCESSOR})")
+elseif (CMAKE_SYSTEM_PROCESSOR MATCHES "ppc64le|ppc64|powerpc64le|powerpc64")
+    set(NK_IS_64BIT_POWER_ TRUE)
+    message(STATUS "NumKong Platform: Power 64 (CMAKE_SYSTEM_PROCESSOR=${CMAKE_SYSTEM_PROCESSOR})")
 elseif (CMAKE_SYSTEM_PROCESSOR MATCHES "^arm|^ARM|armv7")
     set(NK_IS_32BIT_ARM_ TRUE)
     message(STATUS "NumKong Platform: ARM32 (CMAKE_SYSTEM_PROCESSOR=${CMAKE_SYSTEM_PROCESSOR})")
@@ -187,29 +219,61 @@ else ()
 endif ()
 
 if (MSVC)
-    set(CMAKE_CXX_FLAGS_RELEASE "/O2 /DNDEBUG")
-    set(CMAKE_C_FLAGS_RELEASE "/O2 /DNDEBUG")
+    set(CMAKE_CXX_FLAGS_RELEASE "/O2 /Gw /DNDEBUG")
+    set(CMAKE_C_FLAGS_RELEASE "/O2 /Gw /DNDEBUG")
 else ()
-    set(CMAKE_CXX_FLAGS_RELEASE "-O3")
-    set(CMAKE_C_FLAGS_RELEASE "-O3")
+    set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
+    set(CMAKE_C_FLAGS_RELEASE "-O3 -DNDEBUG")
 endif ()
 
-# Compiler-specific flags
-if (CMAKE_CXX_COMPILER_ID MATCHES "^(Apple)?Clang$" OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    # Enable -march=native for native builds on Linux/FreeBSD (not macOS or cross-compilation)
-    if ((NK_IS_LINUX_ OR NK_IS_FREEBSD_) AND NOT CMAKE_CROSSCOMPILING)
-        add_compile_options(-march=native)
+# Portable baseline policy (commits 43e8324d, 453ed5ff, 23f51955): each translation unit gets a per-arch
+# ABI floor, auto-vectorization is forbidden so serial fallbacks stay scalar, and SIMD kernels opt in via
+# per-function __attribute__((target(...))) or #pragma GCC target. NK_MARCH_NATIVE=ON opts out for a
+# host-tuned build. Keep the per-arch table in sync with build.rs, setup.py, and binding.gyp.
+if (NK_MARCH_NATIVE AND NOT MSVC AND NOT CMAKE_CROSSCOMPILING)
+    message(WARNING "NK_MARCH_NATIVE=ON: baking host-specific instructions; result will not run on older CPUs")
+    if (CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang|IntelLLVM)$")
+        # Apple Clang's `-march=native` only advertises a subset of host features
+        # (no SME/SME2/FP16_FML); `-mcpu=native` is the complete knob on macOS.
+        # GCC/Clang on Linux/FreeBSD use `-march=native` as usual.
+        if (APPLE)
+            add_compile_options(-mcpu=native)
+        else ()
+            add_compile_options(-march=native)
+        endif ()
     endif ()
+elseif (CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang|IntelLLVM)$")
+    # Clang and IntelLLVM accept the GCC spellings as aliases, so one pair covers all three compilers.
+    add_compile_options(-fno-tree-vectorize -fno-tree-slp-vectorize)
+    if (NK_IS_64BIT_ARM_)
+        add_compile_options(-march=armv8-a)
+    elseif (NK_IS_64BIT_X86_)
+        add_compile_options(-march=x86-64)
+    elseif (NK_IS_64BIT_RISCV_)
+        add_compile_options(-march=rv64gc)
+    elseif (NK_IS_64BIT_POWER_)
+        add_compile_options(-mcpu=power8)
+    elseif (NK_IS_64BIT_LOONGARCH_)
+        # LASX needs TU-level `-mlasx` until GCC >= 15 / Clang >= 22 ship per-function support.
+        add_compile_options(-march=loongarch64 -mlasx)
+    endif ()
+elseif (MSVC)
+    # MSVC: no per-function target pragma; these match defaults.
+    if (NK_IS_64BIT_X86_)
+        add_compile_options(/arch:SSE2)
+    elseif (NK_IS_64BIT_ARM_)
+        add_compile_options(/arch:armv8.0)
+    endif ()
+endif ()
 
+if (CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang|IntelLLVM)$")
     add_compile_options(-pedantic)
+endif ()
 
-    if (CMAKE_CXX_COMPILER_ID MATCHES "^(Apple)?Clang$")
-        add_compile_options(-ferror-limit=1 -Wno-typedef-redefinition)
-    else ()
-        add_compile_options(-fmax-errors=1 -Wno-tautological-constant-compare -Wno-psabi)
-    endif ()
-elseif (CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM")
-    add_compile_options(-w -ferror-limit=1)
+if (CMAKE_CXX_COMPILER_ID MATCHES "^(Clang|AppleClang|IntelLLVM)$")
+    add_compile_options(-ferror-limit=1 -Wno-typedef-redefinition -Wno-tautological-constant-compare)
+elseif (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    add_compile_options(-fmax-errors=1 -Wno-tautological-constant-compare -Wno-psabi)
 endif ()
 
 # Define the header-only library
@@ -217,6 +281,13 @@ file(GLOB NK_SOURCES include/numkong/*.h include/numkong/*.hpp)
 add_library(numkong INTERFACE)
 target_sources(numkong INTERFACE ${NK_SOURCES})
 target_include_directories(numkong INTERFACE "${PROJECT_SOURCE_DIR}/include")
+
+# MSVC's traditional preprocessor can't short-circuit `defined(__has_builtin) && __has_builtin(...)`.
+# The conforming preprocessor (/Zc:preprocessor, available since MSVC 2019 16.6) handles this.
+# Scoped via INTERFACE so it propagates only to targets that link against numkong.
+if (MSVC)
+    target_compile_options(numkong INTERFACE /Zc:preprocessor)
+endif ()
 
 # Enable Clang C modules for incremental compilation
 if (CMAKE_C_COMPILER_ID MATCHES "Clang")
@@ -226,7 +297,7 @@ if (CMAKE_C_COMPILER_ID MATCHES "Clang")
     )
 
     # Install module map
-    install(FILES ${CMAKE_SOURCE_DIR}/include/module.modulemap DESTINATION include)
+    install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/include/module.modulemap DESTINATION include)
 
     message(STATUS "Clang C modules enabled: cache at ${CMAKE_BINARY_DIR}/module-cache")
 endif ()
@@ -359,6 +430,18 @@ include(cmake/nk_x86_isa_probes.cmake)
 # See cmake/nk_arm_isa_probes.cmake for details and probe definitions.
 include(cmake/nk_arm_isa_probes.cmake)
 
+# LoongArch ISA runtime probes — detect LASX capability at configure time.
+# See cmake/nk_loongarch_isa_probes.cmake for details and probe definitions.
+include(cmake/nk_loongarch_isa_probes.cmake)
+
+# Power ISA runtime probes — detect VSX capability at configure time.
+# See cmake/nk_power_isa_probes.cmake for details and probe definitions.
+include(cmake/nk_power_isa_probes.cmake)
+
+# RISC-V ISA runtime probes — detect RVV capability at configure time.
+# See cmake/nk_riscv_isa_probes.cmake for details and probe definitions.
+include(cmake/nk_riscv_isa_probes.cmake)
+
 # Build benchmarks
 if (NK_BUILD_BENCH)
     # Fetch external dependencies
@@ -393,8 +476,8 @@ if (NK_BUILD_BENCH)
         bench/bench_mesh.cpp bench/bench_sparse.cpp bench/bench_cast.cpp bench/bench_reduce.cpp
         # ISA-family cross/batch files for parallel compilation
         bench/bench_cross_serial.cpp bench/bench_cross_x86.cpp bench/bench_cross_amx.cpp bench/bench_cross_arm.cpp
-        bench/bench_cross_sme.cpp bench/bench_cross_blas.cpp bench/bench_cross_rvv.cpp bench/bench_cross_wasm.cpp
-        bench/bench_maxsim.cpp
+        bench/bench_cross_sme.cpp bench/bench_cross_blas.cpp bench/bench_cross_rvv.cpp bench/bench_cross_power.cpp
+        bench/bench_cross_wasm.cpp bench/bench_cross_loongarch.cpp bench/bench_maxsim.cpp
     )
     target_link_libraries(nk_bench numkong Threads::Threads benchmark)
 
@@ -427,12 +510,24 @@ if (NK_BUILD_BENCH)
         target_link_libraries(nk_bench ${NK_MKL_LIBRARIES})
     endif ()
 
-    if (nk_x86_isa_defs_)
-        target_compile_definitions(nk_bench PRIVATE ${nk_x86_isa_defs_})
+    if (nk_x86_native_defs_)
+        target_compile_definitions(nk_bench PRIVATE ${nk_x86_native_defs_})
     endif ()
 
-    if (nk_arm_isa_defs_)
-        target_compile_definitions(nk_bench PRIVATE ${nk_arm_isa_defs_})
+    if (nk_arm_native_defs_)
+        target_compile_definitions(nk_bench PRIVATE ${nk_arm_native_defs_})
+    endif ()
+
+    if (nk_riscv_native_defs_)
+        target_compile_definitions(nk_bench PRIVATE ${nk_riscv_native_defs_})
+    endif ()
+
+    if (nk_loongarch_native_defs_)
+        target_compile_definitions(nk_bench PRIVATE ${nk_loongarch_native_defs_})
+    endif ()
+
+    if (nk_power_native_defs_)
+        target_compile_definitions(nk_bench PRIVATE ${nk_power_native_defs_})
     endif ()
 endif ()
 
@@ -454,8 +549,8 @@ if (NK_BUILD_TEST)
         test/test_mesh.cpp test/test_cast.cpp test/test_reduce.cpp test/test_sparse.cpp
         # ISA-family cross/batch files for parallel compilation
         test/test_cross_serial.cpp test/test_cross_x86.cpp test/test_cross_amx.cpp test/test_cross_arm.cpp
-        test/test_cross_sme.cpp test/test_cross_blas.cpp test/test_cross_rvv.cpp test/test_cross_wasm.cpp
-        test/test_maxsim.cpp test/test_tensor.cpp
+        test/test_cross_sme.cpp test/test_cross_blas.cpp test/test_cross_rvv.cpp test/test_cross_power.cpp
+        test/test_cross_loongarch.cpp test/test_cross_wasm.cpp test/test_maxsim.cpp test/test_tensor.cpp
     )
     target_link_libraries(nk_test numkong ${NK_CXX_MATH_LIB_})
 
@@ -488,12 +583,24 @@ if (NK_BUILD_TEST)
         target_link_libraries(nk_test ${NK_MKL_LIBRARIES})
     endif ()
 
-    if (nk_x86_isa_defs_)
-        target_compile_definitions(nk_test PRIVATE ${nk_x86_isa_defs_})
+    if (nk_x86_native_defs_)
+        target_compile_definitions(nk_test PRIVATE ${nk_x86_native_defs_})
     endif ()
 
-    if (nk_arm_isa_defs_)
-        target_compile_definitions(nk_test PRIVATE ${nk_arm_isa_defs_})
+    if (nk_arm_native_defs_)
+        target_compile_definitions(nk_test PRIVATE ${nk_arm_native_defs_})
+    endif ()
+
+    if (nk_riscv_native_defs_)
+        target_compile_definitions(nk_test PRIVATE ${nk_riscv_native_defs_})
+    endif ()
+
+    if (nk_loongarch_native_defs_)
+        target_compile_definitions(nk_test PRIVATE ${nk_loongarch_native_defs_})
+    endif ()
+
+    if (nk_power_native_defs_)
+        target_compile_definitions(nk_test PRIVATE ${nk_power_native_defs_})
     endif ()
 
     add_test(NAME nk_test COMMAND nk_test)
@@ -532,13 +639,13 @@ if (NK_BUILD_SHARED)
         target_compile_definitions(
             nk_shared
             PRIVATE NK_TARGET_HASWELL=0 NK_TARGET_SKYLAKE=0 NK_TARGET_ICELAKE=0 NK_TARGET_GENOA=0 NK_TARGET_SAPPHIRE=0
-                    NK_TARGET_TURIN=0 NK_TARGET_ALDER=0 NK_TARGET_SIERRA=0 NK_TARGET_SAPPHIREAMX=0
-                    NK_TARGET_GRANITEAMX=0 NK_TARGET_NEON=0 NK_TARGET_NEONHALF=0 NK_TARGET_NEONSDOT=0
-                    NK_TARGET_NEONBFDOT=0 NK_TARGET_NEONFHM=0 NK_TARGET_SVE=0 NK_TARGET_SVEHALF=0 NK_TARGET_SVEBFDOT=0
-                    NK_TARGET_SVESDOT=0 NK_TARGET_SVE2=0 NK_TARGET_SVE2P1=0 NK_TARGET_SME=0 NK_TARGET_SME2=0
-                    NK_TARGET_SME2P1=0 NK_TARGET_SMEF64=0 NK_TARGET_SMEHALF=0 NK_TARGET_SMEBF16=0 NK_TARGET_SMEBI32=0
-                    NK_TARGET_SMELUT2=0 NK_TARGET_SMEFA64=0 NK_TARGET_RVV=0 NK_TARGET_RVVHALF=0 NK_TARGET_RVVBF16=0
-                    NK_TARGET_RVVBB=0 NK_TARGET_V128RELAXED=1
+                    NK_TARGET_SAPPHIREAMX=0 NK_TARGET_GRANITEAMX=0 NK_TARGET_DIAMOND=0 NK_TARGET_TURIN=0
+                    NK_TARGET_ALDER=0 NK_TARGET_SIERRA=0 NK_TARGET_NEON=0 NK_TARGET_NEONHALF=0 NK_TARGET_NEONSDOT=0
+                    NK_TARGET_NEONBFDOT=0 NK_TARGET_NEONFHM=0 NK_TARGET_NEONFP8=0 NK_TARGET_SVE=0 NK_TARGET_SVEHALF=0
+                    NK_TARGET_SVEBFDOT=0 NK_TARGET_SVESDOT=0 NK_TARGET_SVE2=0 NK_TARGET_SVE2P1=0 NK_TARGET_SME=0
+                    NK_TARGET_SME2=0 NK_TARGET_SME2P1=0 NK_TARGET_SMEF64=0 NK_TARGET_SMEHALF=0 NK_TARGET_SMEBF16=0
+                    NK_TARGET_SMEBI32=0 NK_TARGET_SMELUT2=0 NK_TARGET_SMEFA64=0 NK_TARGET_RVV=0 NK_TARGET_RVVHALF=0
+                    NK_TARGET_RVVBF16=0 NK_TARGET_RVVBB=0 NK_TARGET_V128RELAXED=1
         )
 
         target_link_options(
@@ -562,6 +669,12 @@ if (NK_BUILD_SHARED)
         if (NK_WASM64_)
             target_link_options(nk_shared PRIVATE "SHELL:-s MEMORY64=1")
         endif ()
+
+        # Under Emscripten nk_shared is an executable (.js/.wasm), not a shared
+        # library. CMake refuses target_link_libraries against an imported
+        # executable unless it exports its symbol table. Upstream projects that
+        # add_subdirectory(numkong) and link to nk_shared need this.
+        set_target_properties(nk_shared PROPERTIES ENABLE_EXPORTS ON)
     else ()
         add_library(nk_shared SHARED ${NK_SOURCES})
         target_include_directories(nk_shared PUBLIC "${PROJECT_SOURCE_DIR}/include")
@@ -570,7 +683,13 @@ if (NK_BUILD_SHARED)
         # Hide all symbols by default; only NK_DYNAMIC-annotated API functions are exported.
         # Strip unwind tables from this pure-C library (saves ~78 KB).
         if (NOT MSVC)
-            target_compile_options(nk_shared PRIVATE -fvisibility=hidden -fno-asynchronous-unwind-tables)
+            target_compile_options(
+                nk_shared PRIVATE -fvisibility=hidden -fno-asynchronous-unwind-tables -fno-builtin-memset
+                                  -fno-builtin-memcpy -fno-builtin-memmove
+            )
+            if (CMAKE_C_COMPILER_ID STREQUAL "GNU")
+                target_compile_options(nk_shared PRIVATE -fno-tree-loop-distribute-patterns)
+            endif ()
         endif ()
 
         # MSVC ARM64 cross-compilation: <intrin.h> pulls in <winnt.h> which
@@ -587,151 +706,31 @@ if (NK_BUILD_SHARED)
             set_target_properties(nk_shared PROPERTIES INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
         endif ()
 
-        # NK_TARGET_* defines — match the OS×arch matrix from setup.py
-        # x86-64
-        if (NK_IS_64BIT_X86_)
-            target_compile_definitions(
-                nk_shared
-                PRIVATE NK_TARGET_HASWELL=1 NK_TARGET_NEON=0 NK_TARGET_SVE=0 NK_TARGET_SVE2=0 NK_TARGET_SVE2P1=0
-                        NK_TARGET_SVEHALF=0 NK_TARGET_SVEBFDOT=0 NK_TARGET_SVESDOT=0 NK_TARGET_NEONHALF=0
-                        NK_TARGET_NEONSDOT=0 NK_TARGET_NEONBFDOT=0 NK_TARGET_NEONFHM=0 NK_TARGET_SME=0 NK_TARGET_SME2=0
-                        NK_TARGET_SME2P1=0 NK_TARGET_SMEF64=0 NK_TARGET_SMEHALF=0 NK_TARGET_SMEBF16=0
-                        NK_TARGET_SMEBI32=0 NK_TARGET_SMELUT2=0 NK_TARGET_SMEFA64=0 NK_TARGET_RVV=0 NK_TARGET_RVVHALF=0
-                        NK_TARGET_RVVBF16=0 NK_TARGET_RVVBB=0
-            )
+        # NK_TARGET_* defines — driven by ISA compiler probes.
+        # Probes test compiler capability (can emit instructions); runtime dispatch
+        # via nk_capabilities() selects the best backend at execution time.
+        # Platform-specific overrides applied AFTER probes for OS/runtime constraints.
 
-            if (NK_IS_LINUX_)
-                target_compile_definitions(
-                    nk_shared
-                    PRIVATE NK_TARGET_SKYLAKE=1 NK_TARGET_ICELAKE=1 NK_TARGET_GENOA=1 NK_TARGET_SAPPHIRE=1
-                            NK_TARGET_TURIN=1 NK_TARGET_ALDER=1 NK_TARGET_SIERRA=1 NK_TARGET_SAPPHIREAMX=1
-                            NK_TARGET_GRANITEAMX=1
-                )
-            elseif (NK_IS_FREEBSD_)
-                target_compile_definitions(
-                    nk_shared
-                    PRIVATE NK_TARGET_SKYLAKE=1 NK_TARGET_ICELAKE=1 NK_TARGET_GENOA=1 NK_TARGET_SAPPHIRE=1
-                            NK_TARGET_TURIN=1 NK_TARGET_ALDER=1 NK_TARGET_SIERRA=1 NK_TARGET_SAPPHIREAMX=0
-                            NK_TARGET_GRANITEAMX=0
-                )
-            elseif (NK_IS_WINDOWS_)
-                # MSVC 19.44+ (VS 2022 17.14+): all AVX-512 intrinsics available without /arch:AVX512
-                target_compile_definitions(
-                    nk_shared
-                    PRIVATE NK_TARGET_SKYLAKE=1 NK_TARGET_ICELAKE=1 NK_TARGET_GENOA=1 NK_TARGET_SAPPHIRE=1
-                            NK_TARGET_TURIN=1 NK_TARGET_ALDER=1 NK_TARGET_SIERRA=1 NK_TARGET_SAPPHIREAMX=1
-                            NK_TARGET_GRANITEAMX=1
-                )
-            elseif (NK_IS_MACOS_)
-                target_compile_definitions(
-                    nk_shared
-                    PRIVATE NK_TARGET_SKYLAKE=0 NK_TARGET_ICELAKE=0 NK_TARGET_GENOA=0 NK_TARGET_SAPPHIRE=0
-                            NK_TARGET_TURIN=0 NK_TARGET_ALDER=0 NK_TARGET_SIERRA=0 NK_TARGET_SAPPHIREAMX=0
-                            NK_TARGET_GRANITEAMX=0
-                )
-            endif ()
-
-            # ARM64
-        elseif (NK_IS_64BIT_ARM_)
-            target_compile_definitions(
-                nk_shared
-                PRIVATE NK_TARGET_HASWELL=0 NK_TARGET_SKYLAKE=0 NK_TARGET_ICELAKE=0 NK_TARGET_GENOA=0
-                        NK_TARGET_SAPPHIRE=0 NK_TARGET_TURIN=0 NK_TARGET_ALDER=0 NK_TARGET_SIERRA=0
-                        NK_TARGET_SAPPHIREAMX=0 NK_TARGET_GRANITEAMX=0 NK_TARGET_RVV=0 NK_TARGET_RVVHALF=0
-                        NK_TARGET_RVVBF16=0 NK_TARGET_RVVBB=0
-            )
-
-            if (NK_IS_LINUX_ OR NK_IS_FREEBSD_)
-                target_compile_definitions(
-                    nk_shared
-                    PRIVATE NK_TARGET_NEON=1 NK_TARGET_NEONHALF=1 NK_TARGET_NEONSDOT=1 NK_TARGET_NEONBFDOT=1
-                            NK_TARGET_NEONFHM=1 NK_TARGET_SVE=1 NK_TARGET_SVEHALF=1 NK_TARGET_SVEBFDOT=1
-                            NK_TARGET_SVESDOT=1 NK_TARGET_SVE2=1 NK_TARGET_SVE2P1=1 NK_TARGET_SME=1 NK_TARGET_SME2=1
-                            NK_TARGET_SME2P1=1 NK_TARGET_SMEF64=1 NK_TARGET_SMEHALF=1 NK_TARGET_SMEBF16=1
-                            NK_TARGET_SMEBI32=1 NK_TARGET_SMELUT2=1 NK_TARGET_SMEFA64=1
-                )
-            elseif (NK_IS_ANDROID_)
-                # Android NDK Clang supports NEON universally on ARM64.
-                # SVE/SME backends are compiled in but gated by runtime dispatch — the CPU
-                # must advertise the feature via getauxval(AT_HWCAP) for the kernel
-                # to ever call those paths.
-                target_compile_definitions(
-                    nk_shared
-                    PRIVATE NK_TARGET_NEON=1 NK_TARGET_NEONHALF=1 NK_TARGET_NEONSDOT=1 NK_TARGET_NEONBFDOT=1
-                            NK_TARGET_NEONFHM=1 NK_TARGET_SVE=1 NK_TARGET_SVEHALF=1 NK_TARGET_SVEBFDOT=1
-                            NK_TARGET_SVESDOT=1 NK_TARGET_SVE2=1 NK_TARGET_SVE2P1=1 NK_TARGET_SME=1 NK_TARGET_SME2=1
-                            NK_TARGET_SME2P1=1 NK_TARGET_SMEF64=1 NK_TARGET_SMEHALF=1 NK_TARGET_SMEBF16=1
-                            NK_TARGET_SMEBI32=1 NK_TARGET_SMELUT2=1 NK_TARGET_SMEFA64=1
-                )
-            elseif (NK_IS_IOS_ OR NK_IS_MACOS_)
-                # SME requires AppleClang 16+ (Xcode 16, based on Clang 18) or Clang 18+
-                if ((CMAKE_C_COMPILER_ID STREQUAL "AppleClang" AND CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL "16.0"
-                    ) OR (CMAKE_C_COMPILER_ID STREQUAL "Clang" AND CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL "18.0"
-                         )
-                )
-                    set(NK_SME_ 1)
-                else ()
-                    set(NK_SME_ 0)
-                endif ()
-
-                target_compile_definitions(
-                    nk_shared
-                    PRIVATE NK_TARGET_NEON=1 NK_TARGET_NEONHALF=1 NK_TARGET_NEONSDOT=1 NK_TARGET_NEONBFDOT=1
-                            NK_TARGET_NEONFHM=1 NK_TARGET_SVE=0 NK_TARGET_SVEHALF=0 NK_TARGET_SVEBFDOT=0
-                            NK_TARGET_SVESDOT=0 NK_TARGET_SVE2=0 NK_TARGET_SVE2P1=0 NK_TARGET_SME=${NK_SME_}
-                            NK_TARGET_SME2=${NK_SME_} NK_TARGET_SME2P1=${NK_SME_} NK_TARGET_SMEF64=${NK_SME_}
-                            NK_TARGET_SMEHALF=${NK_SME_} NK_TARGET_SMEBF16=${NK_SME_} NK_TARGET_SMEBI32=${NK_SME_}
-                            NK_TARGET_SMELUT2=${NK_SME_} NK_TARGET_SMEFA64=${NK_SME_}
-                )
-            elseif (NK_IS_WINDOWS_)
-                target_compile_definitions(
-                    nk_shared
-                    PRIVATE NK_TARGET_NEON=1 NK_TARGET_NEONHALF=0 NK_TARGET_NEONSDOT=1 NK_TARGET_NEONBFDOT=0
-                            NK_TARGET_NEONFHM=0 NK_TARGET_SVE=0 NK_TARGET_SVEHALF=0 NK_TARGET_SVEBFDOT=0
-                            NK_TARGET_SVESDOT=0 NK_TARGET_SVE2=0 NK_TARGET_SVE2P1=0 NK_TARGET_SME=0 NK_TARGET_SME2=0
-                            NK_TARGET_SME2P1=0 NK_TARGET_SMEF64=0 NK_TARGET_SMEHALF=0 NK_TARGET_SMEBF16=0
-                            NK_TARGET_SMEBI32=0 NK_TARGET_SMELUT2=0 NK_TARGET_SMEFA64=0
-                )
-            endif ()
-
-            # RISC-V 64
-        elseif (NK_IS_64BIT_RISCV_)
-            target_compile_definitions(
-                nk_shared
-                PRIVATE NK_TARGET_HASWELL=0 NK_TARGET_SKYLAKE=0 NK_TARGET_ICELAKE=0 NK_TARGET_GENOA=0
-                        NK_TARGET_SAPPHIRE=0 NK_TARGET_TURIN=0 NK_TARGET_ALDER=0 NK_TARGET_SIERRA=0
-                        NK_TARGET_SAPPHIREAMX=0 NK_TARGET_GRANITEAMX=0 NK_TARGET_NEON=0 NK_TARGET_NEONHALF=0
-                        NK_TARGET_NEONSDOT=0 NK_TARGET_NEONBFDOT=0 NK_TARGET_NEONFHM=0 NK_TARGET_SVE=0
-                        NK_TARGET_SVEHALF=0 NK_TARGET_SVEBFDOT=0 NK_TARGET_SVESDOT=0 NK_TARGET_SVE2=0
-                        NK_TARGET_SVE2P1=0 NK_TARGET_SME=0 NK_TARGET_SME2=0 NK_TARGET_SME2P1=0 NK_TARGET_SMEF64=0
-                        NK_TARGET_SMEHALF=0 NK_TARGET_SMEBF16=0 NK_TARGET_SMEBI32=0 NK_TARGET_SMELUT2=0
-                        NK_TARGET_SMEFA64=0
-            )
-
-            if (NK_IS_LINUX_ OR NK_IS_FREEBSD_)
-                target_compile_definitions(
-                    nk_shared PRIVATE NK_TARGET_RVV=1 NK_TARGET_RVVHALF=1 NK_TARGET_RVVBF16=1 NK_TARGET_RVVBB=1
-                )
-            else ()
-                target_compile_definitions(
-                    nk_shared PRIVATE NK_TARGET_RVV=0 NK_TARGET_RVVHALF=0 NK_TARGET_RVVBF16=0 NK_TARGET_RVVBB=0
-                )
-            endif ()
-
-        elseif (NK_IS_32BIT_ARM_)
-            # ARM32 — serial-only (the NEON kernels target AArch64 intrinsics)
-            target_compile_definitions(
-                nk_shared
-                PRIVATE NK_TARGET_HASWELL=0 NK_TARGET_SKYLAKE=0 NK_TARGET_ICELAKE=0 NK_TARGET_GENOA=0
-                        NK_TARGET_SAPPHIRE=0 NK_TARGET_TURIN=0 NK_TARGET_ALDER=0 NK_TARGET_SIERRA=0
-                        NK_TARGET_SAPPHIREAMX=0 NK_TARGET_GRANITEAMX=0 NK_TARGET_RVV=0 NK_TARGET_RVVHALF=0
-                        NK_TARGET_RVVBF16=0 NK_TARGET_RVVBB=0 NK_TARGET_SVE=0 NK_TARGET_SVEHALF=0 NK_TARGET_SVEBFDOT=0
-                        NK_TARGET_SVESDOT=0 NK_TARGET_SVE2=0 NK_TARGET_SVE2P1=0 NK_TARGET_SME=0 NK_TARGET_SME2=0
-                        NK_TARGET_SME2P1=0 NK_TARGET_SMEF64=0 NK_TARGET_SMEHALF=0 NK_TARGET_SMEBF16=0
-                        NK_TARGET_SMEBI32=0 NK_TARGET_SMELUT2=0 NK_TARGET_SMEFA64=0 NK_TARGET_NEON=0
-                        NK_TARGET_NEONHALF=0 NK_TARGET_NEONSDOT=0 NK_TARGET_NEONBFDOT=0 NK_TARGET_NEONFHM=0
-            )
+        # Apply compile-only probe results for each architecture
+        if (nk_x86_compile_defs_)
+            target_compile_definitions(nk_shared PRIVATE ${nk_x86_compile_defs_})
         endif ()
+        if (nk_arm_compile_defs_)
+            target_compile_definitions(nk_shared PRIVATE ${nk_arm_compile_defs_})
+        endif ()
+        if (nk_riscv_compile_defs_)
+            target_compile_definitions(nk_shared PRIVATE ${nk_riscv_compile_defs_})
+        endif ()
+        if (nk_loongarch_compile_defs_)
+            target_compile_definitions(nk_shared PRIVATE ${nk_loongarch_compile_defs_})
+        endif ()
+        if (nk_power_compile_defs_)
+            target_compile_definitions(nk_shared PRIVATE ${nk_power_compile_defs_})
+        endif ()
+
+        # Platform-specific overrides are no longer needed here — the probe .c
+        # files contain `#error` guards that cause check_source_compiles() to
+        # fail on unsupported OS/runtime combinations.
     endif ()
 
     install(
@@ -760,14 +759,72 @@ if (NK_BUILD_SHARED_TEST)
         test/test_probability.cpp test/test_each.cpp test/test_trigonometry.cpp test/test_geospatial.cpp
         test/test_mesh.cpp test/test_cast.cpp test/test_reduce.cpp test/test_sparse.cpp test/test_cross_serial.cpp
         test/test_cross_x86.cpp test/test_cross_amx.cpp test/test_cross_arm.cpp test/test_cross_sme.cpp
-        test/test_cross_blas.cpp test/test_cross_rvv.cpp test/test_cross_wasm.cpp test/test_maxsim.cpp
-        test/test_tensor.cpp
+        test/test_cross_blas.cpp test/test_cross_rvv.cpp test/test_cross_power.cpp test/test_cross_loongarch.cpp
+        test/test_cross_wasm.cpp test/test_maxsim.cpp test/test_tensor.cpp
     )
     target_include_directories(nk_shared_test PRIVATE "${PROJECT_SOURCE_DIR}/include")
     target_compile_definitions(nk_shared_test PRIVATE NK_DYNAMIC_DISPATCH=1)
     target_link_libraries(nk_shared_test nk_shared ${NK_CXX_MATH_LIB_})
 
+    # The shared-library test must exercise only the DLL dispatch path, so compile
+    # the test binary at the platform baseline (no SIMD extensions).  This prevents
+    # types.h auto-detection (e.g. MSVC _MSC_VER >= 1920 → NK_TARGET_SKYLAKE=1) from
+    # pulling in inline AVX-512 code the CPU may not support.  All ISA-specific
+    # kernel coverage comes from nk_test (header-only, with native probe defs).
+    target_compile_definitions(
+        nk_shared_test
+        PRIVATE NK_TARGET_HASWELL=0 NK_TARGET_SKYLAKE=0 NK_TARGET_ICELAKE=0 NK_TARGET_GENOA=0 NK_TARGET_SAPPHIRE=0
+                NK_TARGET_SAPPHIREAMX=0 NK_TARGET_GRANITEAMX=0 NK_TARGET_DIAMOND=0 NK_TARGET_TURIN=0 NK_TARGET_ALDER=0
+                NK_TARGET_SIERRA=0 NK_TARGET_NEON=0 NK_TARGET_NEONHALF=0 NK_TARGET_NEONSDOT=0 NK_TARGET_NEONBFDOT=0
+                NK_TARGET_NEONFHM=0 NK_TARGET_NEONFP8=0 NK_TARGET_SVE=0 NK_TARGET_SVEHALF=0 NK_TARGET_SVEBFDOT=0
+                NK_TARGET_SVESDOT=0 NK_TARGET_SVE2=0 NK_TARGET_SVE2P1=0 NK_TARGET_SME=0 NK_TARGET_SME2=0
+                NK_TARGET_SME2P1=0 NK_TARGET_SMEF64=0 NK_TARGET_SMEHALF=0 NK_TARGET_SMEBF16=0 NK_TARGET_SMEBI32=0
+                NK_TARGET_SMELUT2=0 NK_TARGET_SMEFA64=0 NK_TARGET_RVV=0 NK_TARGET_RVVHALF=0 NK_TARGET_RVVBF16=0
+                NK_TARGET_RVVBB=0 NK_TARGET_LOONGSONASX=0 NK_TARGET_POWERVSX=0 NK_TARGET_V128RELAXED=0
+    )
+
     add_test(NAME nk_shared_test COMMAND nk_shared_test)
+endif ()
+
+# CUDA interop test built from test/test.cu; see that file's docstring for what it covers and the GPU
+# compatibility notes.
+if (NK_BUILD_CUDA_TEST)
+    enable_language(CUDA)
+    if (NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+        set(CMAKE_CUDA_ARCHITECTURES 75)
+    endif ()
+    add_executable(nk_cuda_test test/test.cu)
+    target_include_directories(nk_cuda_test PRIVATE "${PROJECT_SOURCE_DIR}/include")
+    set_target_properties(nk_cuda_test PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED YES CUDA_EXTENSIONS NO)
+
+    # Forward the baseline flags to NVCC's host compiler, scoped to this target.
+    if (NK_IS_64BIT_X86_)
+        target_compile_options(
+            nk_cuda_test PRIVATE -Xcompiler=-march=x86-64 -Xcompiler=-fno-tree-vectorize
+                                 -Xcompiler=-fno-tree-slp-vectorize
+        )
+    elseif (NK_IS_64BIT_ARM_)
+        target_compile_options(
+            nk_cuda_test PRIVATE -Xcompiler=-march=armv8-a -Xcompiler=-fno-tree-vectorize
+                                 -Xcompiler=-fno-tree-slp-vectorize
+        )
+    endif ()
+    if (nk_x86_native_defs_)
+        target_compile_definitions(nk_cuda_test PRIVATE ${nk_x86_native_defs_})
+    endif ()
+    if (nk_arm_native_defs_)
+        target_compile_definitions(nk_cuda_test PRIVATE ${nk_arm_native_defs_})
+    endif ()
+    if (nk_riscv_native_defs_)
+        target_compile_definitions(nk_cuda_test PRIVATE ${nk_riscv_native_defs_})
+    endif ()
+    if (nk_loongarch_native_defs_)
+        target_compile_definitions(nk_cuda_test PRIVATE ${nk_loongarch_native_defs_})
+    endif ()
+    if (nk_power_native_defs_)
+        target_compile_definitions(nk_cuda_test PRIVATE ${nk_power_native_defs_})
+    endif ()
+    add_test(NAME nk_cuda_test COMMAND nk_cuda_test)
 endif ()
 
 install(DIRECTORY include/ DESTINATION include)

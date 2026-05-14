@@ -1,26 +1,28 @@
 #!/usr/bin/env python3
 """Test sparse operations: nk.sparse_dot, nk.intersect.
 
-Covers dtypes: float32 values with uint32 indices (sparse_dot),
-    uint16/uint32 indices (intersect).
-Parametrized over: capability, index dtype, length bounds.
-
-Precision notes:
-    sparse_dot uses NK_ATOL/NK_RTOL against manual weighted intersection.
-    intersect uses exact integer comparison (round to nearest int).
-
+Dtypes: float32 values with uint16/uint32 indices.
+Baselines: manual weighted intersection, NumPy intersect1d.
 Matches C++ suite: test_sparse.cpp.
 """
 
 import atexit
 import platform
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import pytest
 
+if TYPE_CHECKING:
+    import numpy as np  # static-analysis-only; the runtime try/except below is authoritative
+
 try:
     import numpy as np
-except:  # noqa: E722
-    np = None
+
+    numpy_available = True
+except Exception:
+    numpy_available = False
+
 
 import numkong as nk
 from test_base import (
@@ -43,18 +45,31 @@ from test_base import (
 stats = create_stats()
 atexit.register(print_stats_report, stats)
 
-baseline_intersect = lambda x, y: len(np.intersect1d(x, y))
 
-KERNELS_SPARSE = {
+def baseline_intersect(x, y, dtype=None):
+    return len(np.intersect1d(x, y))
+
+
+def baseline_sparse_dot(a_idx, a_val, b_idx, b_val):
+    common = np.intersect1d(a_idx, b_idx)
+    total = 0.0
+    for idx in common:
+        total += float(a_val[np.searchsorted(a_idx, idx)]) * float(b_val[np.searchsorted(b_idx, idx)])
+    return total
+
+
+KERNELS_SPARSE: dict[str, tuple[Callable, Callable, None]] = {
     "intersect": (baseline_intersect, nk.intersect, None),
+    "sparse_dot": (baseline_sparse_dot, nk.sparse_dot, None),
 }
 
 
 @pytest.mark.skipif(not numpy_available, reason="NumPy is not installed")
 @pytest.mark.repeat(randomized_repetitions_count)
 @pytest.mark.parametrize("capability", possible_capabilities)
-def test_sparse_dot(capability):
+def test_sparse_dot(capability: str):
     """Test nk.sparse_dot against manual weighted intersection."""
+    baseline_kernel, simd_kernel, _ = KERNELS_SPARSE["sparse_dot"]
     sparse_dim = sparse_dimensions[0]
     a_idx = np.unique(np.random.randint(0, sparse_dim, size=min(50, sparse_dim))).astype(np.uint32)
     b_idx = np.unique(np.random.randint(0, sparse_dim, size=min(50, sparse_dim))).astype(np.uint32)
@@ -62,21 +77,10 @@ def test_sparse_dot(capability):
     b_val = np.random.randn(len(b_idx)).astype(np.float32)
 
     keep_one_capability(capability)
-    result_dt, result = profile(nk.sparse_dot, a_idx, a_val, b_idx, b_val)
+    result_dt, result = profile(simd_kernel, a_idx, a_val, b_idx, b_val)
 
-    def _sparse_dot_baseline(a_idx, a_val, b_idx, b_val):
-        common = np.intersect1d(a_idx, b_idx)
-        total = 0.0
-        for idx in common:
-            ai = np.searchsorted(a_idx, idx)
-            bi = np.searchsorted(b_idx, idx)
-            total += float(a_val[ai]) * float(b_val[bi])
-        return total
-
-    accurate_dt, accurate = profile(
-        _sparse_dot_baseline, a_idx, a_val.astype(np.float64), b_idx, b_val.astype(np.float64)
-    )
-    expected_dt, expected = profile(_sparse_dot_baseline, a_idx, a_val, b_idx, b_val)
+    accurate_dt, accurate = profile(baseline_kernel, a_idx, a_val.astype(np.float64), b_idx, b_val.astype(np.float64))
+    expected_dt, expected = profile(baseline_kernel, a_idx, a_val, b_idx, b_val)
 
     assert_allclose(result, accurate, atol=NK_ATOL, rtol=NK_RTOL)
     collect_errors(
@@ -90,7 +94,7 @@ def test_sparse_dot(capability):
 @pytest.mark.parametrize("first_length_bound", [10, 100, 1000])
 @pytest.mark.parametrize("second_length_bound", [10, 100, 1000])
 @pytest.mark.parametrize("capability", possible_capabilities)
-def test_intersect(dtype, first_length_bound, second_length_bound, capability):
+def test_intersect(dtype: str, first_length_bound: int, second_length_bound: int, capability: str):
     """Compares the nk.intersect() function with numpy.intersect1d."""
     if is_running_under_qemu() and (platform.machine() == "aarch64" or platform.machine() == "arm64"):
         pytest.skip("In QEMU `aarch64` emulation on `x86_64` the `intersect` function is not reliable")
@@ -104,8 +108,9 @@ def test_intersect(dtype, first_length_bound, second_length_bound, capability):
     b = np.unique(b)
 
     keep_one_capability(capability)
-    expected = baseline_intersect(a, b)
-    result = nk.intersect(a, b)
+    baseline_kernel, simd_kernel, _ = KERNELS_SPARSE["intersect"]
+    expected = baseline_kernel(a, b)
+    result = simd_kernel(a, b)
 
     assert round(float(expected)) == round(float(result)), (
         f"Intersection count mismatch: expected {expected}, got {result}. "

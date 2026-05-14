@@ -9,7 +9,7 @@
 #ifndef NK_SPATIALS_SAPPHIREAMX_H
 #define NK_SPATIALS_SAPPHIREAMX_H
 
-#if NK_TARGET_X86_
+#if NK_TARGET_X8664_
 #if NK_TARGET_SAPPHIREAMX
 
 #include "numkong/spatial/skylake.h"
@@ -184,7 +184,7 @@ NK_INTERNAL void nk_euclideans_row_u32dots_sapphireamx_(nk_f32_t *results, nk_u3
     }
 }
 
-#pragma endregion // Row Finalize Helpers
+#pragma endregion Row Finalize Helpers
 
 #pragma region BF16 Packed
 
@@ -234,11 +234,11 @@ NK_PUBLIC void nk_euclideans_packed_bf16_sapphireamx(      //
                                                     c_stride_elements);
 }
 
-#pragma endregion // BF16 Packed
+#pragma endregion BF16 Packed
 
 #pragma region BF16 Symmetric
 
-NK_INTERNAL void nk_angulars_symmetric_bf16_sapphireamx_finalize_(nk_bf16_t const *vectors, nk_size_t n_vectors,
+NK_INTERNAL void nk_angulars_symmetric_bf16_sapphireamx_finalize_(nk_bf16_t const *vectors, nk_size_t vectors_count,
                                                                   nk_size_t depth, nk_size_t stride_elements,
                                                                   nk_f32_t *result, nk_size_t result_stride_elements,
                                                                   nk_size_t row_start, nk_size_t row_count) {
@@ -249,8 +249,8 @@ NK_INTERNAL void nk_angulars_symmetric_bf16_sapphireamx_finalize_(nk_bf16_t cons
 
     // Phase 2: 256-column chunks with cached norms
     nk_f32_t column_norms_cache[256];
-    for (nk_size_t chunk_start = 0; chunk_start < n_vectors; chunk_start += 256) {
-        nk_size_t chunk_end = chunk_start + 256 < n_vectors ? chunk_start + 256 : n_vectors;
+    for (nk_size_t chunk_start = 0; chunk_start < vectors_count; chunk_start += 256) {
+        nk_size_t chunk_end = chunk_start + 256 < vectors_count ? chunk_start + 256 : vectors_count;
         for (nk_size_t col = chunk_start; col < chunk_end; col++)
             column_norms_cache[col - chunk_start] = nk_dots_reduce_sumsq_bf16_(vectors + col * stride_elements, depth);
 
@@ -267,18 +267,18 @@ NK_INTERNAL void nk_angulars_symmetric_bf16_sapphireamx_finalize_(nk_bf16_t cons
     for (nk_size_t row = row_start; row < row_start + row_count; row++) result[row * result_stride_elements + row] = 0;
 }
 
-NK_PUBLIC void nk_angulars_symmetric_bf16_sapphireamx(                                //
-    nk_bf16_t const *vectors, nk_size_t n_vectors, nk_size_t depth, nk_size_t stride, //
-    nk_f32_t *result, nk_size_t result_stride, nk_size_t row_start, nk_size_t row_count) {
-    nk_size_t const stride_elements = stride / sizeof(nk_bf16_t);
-    nk_size_t const result_stride_elements = result_stride / sizeof(nk_f32_t);
-    nk_dots_symmetric_bf16_sapphireamx(vectors, n_vectors, depth, stride, (nk_f32_t *)result, result_stride, row_start,
-                                       row_count);
-    nk_angulars_symmetric_bf16_sapphireamx_finalize_(vectors, n_vectors, depth, stride_elements, result,
+NK_PUBLIC void nk_angulars_symmetric_bf16_sapphireamx(                                             //
+    nk_bf16_t const *vectors, nk_size_t vectors_count, nk_size_t depth, nk_size_t stride_in_bytes, //
+    nk_f32_t *result, nk_size_t result_stride_in_bytes, nk_size_t row_start, nk_size_t row_count) {
+    nk_size_t const stride_elements = stride_in_bytes / sizeof(nk_bf16_t);
+    nk_size_t const result_stride_elements = result_stride_in_bytes / sizeof(nk_f32_t);
+    nk_dots_symmetric_bf16_sapphireamx(vectors, vectors_count, depth, stride_in_bytes, (nk_f32_t *)result,
+                                       result_stride_in_bytes, row_start, row_count);
+    nk_angulars_symmetric_bf16_sapphireamx_finalize_(vectors, vectors_count, depth, stride_elements, result,
                                                      result_stride_elements, row_start, row_count);
 }
 
-NK_INTERNAL void nk_euclideans_symmetric_bf16_sapphireamx_finalize_(nk_bf16_t const *vectors, nk_size_t n_vectors,
+NK_INTERNAL void nk_euclideans_symmetric_bf16_sapphireamx_finalize_(nk_bf16_t const *vectors, nk_size_t vectors_count,
                                                                     nk_size_t depth, nk_size_t stride_elements,
                                                                     nk_f32_t *result, nk_size_t result_stride_elements,
                                                                     nk_size_t row_start, nk_size_t row_count) {
@@ -289,8 +289,8 @@ NK_INTERNAL void nk_euclideans_symmetric_bf16_sapphireamx_finalize_(nk_bf16_t co
 
     // Phase 2: 256-column chunks with cached norms
     nk_f32_t column_norms_cache[256];
-    for (nk_size_t chunk_start = 0; chunk_start < n_vectors; chunk_start += 256) {
-        nk_size_t chunk_end = chunk_start + 256 < n_vectors ? chunk_start + 256 : n_vectors;
+    for (nk_size_t chunk_start = 0; chunk_start < vectors_count; chunk_start += 256) {
+        nk_size_t chunk_end = chunk_start + 256 < vectors_count ? chunk_start + 256 : vectors_count;
         for (nk_size_t col = chunk_start; col < chunk_end; col++)
             column_norms_cache[col - chunk_start] = nk_dots_reduce_sumsq_bf16_(vectors + col * stride_elements, depth);
 
@@ -307,20 +307,20 @@ NK_INTERNAL void nk_euclideans_symmetric_bf16_sapphireamx_finalize_(nk_bf16_t co
     for (nk_size_t row = row_start; row < row_start + row_count; row++) result[row * result_stride_elements + row] = 0;
 }
 
-NK_PUBLIC void nk_euclideans_symmetric_bf16_sapphireamx(                              //
-    nk_bf16_t const *vectors, nk_size_t n_vectors, nk_size_t depth, nk_size_t stride, //
-    nk_f32_t *result, nk_size_t result_stride, nk_size_t row_start, nk_size_t row_count) {
-    nk_size_t const stride_elements = stride / sizeof(nk_bf16_t);
-    nk_size_t const result_stride_elements = result_stride / sizeof(nk_f32_t);
-    nk_dots_symmetric_bf16_sapphireamx(vectors, n_vectors, depth, stride, (nk_f32_t *)result, result_stride, row_start,
-                                       row_count);
-    nk_euclideans_symmetric_bf16_sapphireamx_finalize_(vectors, n_vectors, depth, stride_elements, result,
+NK_PUBLIC void nk_euclideans_symmetric_bf16_sapphireamx(                                           //
+    nk_bf16_t const *vectors, nk_size_t vectors_count, nk_size_t depth, nk_size_t stride_in_bytes, //
+    nk_f32_t *result, nk_size_t result_stride_in_bytes, nk_size_t row_start, nk_size_t row_count) {
+    nk_size_t const stride_elements = stride_in_bytes / sizeof(nk_bf16_t);
+    nk_size_t const result_stride_elements = result_stride_in_bytes / sizeof(nk_f32_t);
+    nk_dots_symmetric_bf16_sapphireamx(vectors, vectors_count, depth, stride_in_bytes, (nk_f32_t *)result,
+                                       result_stride_in_bytes, row_start, row_count);
+    nk_euclideans_symmetric_bf16_sapphireamx_finalize_(vectors, vectors_count, depth, stride_elements, result,
                                                        result_stride_elements, row_start, row_count);
 }
 
-#pragma endregion // BF16 Symmetric
+#pragma endregion BF16 Symmetric
 
-#pragma region Signed 8-bit Integer Packed
+#pragma region I8 Packed
 
 NK_INTERNAL void nk_angulars_packed_i8_sapphireamx_finalize_(nk_i8_t const *a, void const *b_packed, nk_f32_t *c,
                                                              nk_size_t rows, nk_size_t columns, nk_size_t depth,
@@ -369,11 +369,11 @@ NK_PUBLIC void nk_euclideans_packed_i8_sapphireamx(      //
                                                   c_stride_elements);
 }
 
-#pragma endregion // Signed 8-bit Integer Packed
+#pragma endregion I8 Packed
 
-#pragma region Signed 8-bit Integer Symmetric
+#pragma region I8 Symmetric
 
-NK_INTERNAL void nk_angulars_symmetric_i8_sapphireamx_finalize_(nk_i8_t const *vectors, nk_size_t n_vectors,
+NK_INTERNAL void nk_angulars_symmetric_i8_sapphireamx_finalize_(nk_i8_t const *vectors, nk_size_t vectors_count,
                                                                 nk_size_t depth, nk_size_t stride_elements,
                                                                 nk_f32_t *result, nk_size_t result_stride_elements,
                                                                 nk_size_t row_start, nk_size_t row_count) {
@@ -385,8 +385,8 @@ NK_INTERNAL void nk_angulars_symmetric_i8_sapphireamx_finalize_(nk_i8_t const *v
 
     // Phase 2: 256-column chunks with cached norms
     nk_u32_t column_norms_cache[256];
-    for (nk_size_t chunk_start = 0; chunk_start < n_vectors; chunk_start += 256) {
-        nk_size_t chunk_end = chunk_start + 256 < n_vectors ? chunk_start + 256 : n_vectors;
+    for (nk_size_t chunk_start = 0; chunk_start < vectors_count; chunk_start += 256) {
+        nk_size_t chunk_end = chunk_start + 256 < vectors_count ? chunk_start + 256 : vectors_count;
         for (nk_size_t col = chunk_start; col < chunk_end; col++)
             column_norms_cache[col - chunk_start] = nk_dots_reduce_sumsq_i8_(vectors + col * stride_elements, depth);
 
@@ -404,18 +404,18 @@ NK_INTERNAL void nk_angulars_symmetric_i8_sapphireamx_finalize_(nk_i8_t const *v
     for (nk_size_t row = row_start; row < row_start + row_count; row++) result[row * result_stride_elements + row] = 0;
 }
 
-NK_PUBLIC void nk_angulars_symmetric_i8_sapphireamx(                                //
-    nk_i8_t const *vectors, nk_size_t n_vectors, nk_size_t depth, nk_size_t stride, //
-    nk_f32_t *result, nk_size_t result_stride, nk_size_t row_start, nk_size_t row_count) {
-    nk_size_t const stride_elements = stride / sizeof(nk_i8_t);
-    nk_size_t const result_stride_elements = result_stride / sizeof(nk_f32_t);
-    nk_dots_symmetric_i8_sapphireamx(vectors, n_vectors, depth, stride, (nk_i32_t *)result, result_stride, row_start,
-                                     row_count);
-    nk_angulars_symmetric_i8_sapphireamx_finalize_(vectors, n_vectors, depth, stride_elements, result,
+NK_PUBLIC void nk_angulars_symmetric_i8_sapphireamx(                                             //
+    nk_i8_t const *vectors, nk_size_t vectors_count, nk_size_t depth, nk_size_t stride_in_bytes, //
+    nk_f32_t *result, nk_size_t result_stride_in_bytes, nk_size_t row_start, nk_size_t row_count) {
+    nk_size_t const stride_elements = stride_in_bytes / sizeof(nk_i8_t);
+    nk_size_t const result_stride_elements = result_stride_in_bytes / sizeof(nk_f32_t);
+    nk_dots_symmetric_i8_sapphireamx(vectors, vectors_count, depth, stride_in_bytes, (nk_i32_t *)result,
+                                     result_stride_in_bytes, row_start, row_count);
+    nk_angulars_symmetric_i8_sapphireamx_finalize_(vectors, vectors_count, depth, stride_elements, result,
                                                    result_stride_elements, row_start, row_count);
 }
 
-NK_INTERNAL void nk_euclideans_symmetric_i8_sapphireamx_finalize_(nk_i8_t const *vectors, nk_size_t n_vectors,
+NK_INTERNAL void nk_euclideans_symmetric_i8_sapphireamx_finalize_(nk_i8_t const *vectors, nk_size_t vectors_count,
                                                                   nk_size_t depth, nk_size_t stride_elements,
                                                                   nk_f32_t *result, nk_size_t result_stride_elements,
                                                                   nk_size_t row_start, nk_size_t row_count) {
@@ -427,8 +427,8 @@ NK_INTERNAL void nk_euclideans_symmetric_i8_sapphireamx_finalize_(nk_i8_t const 
 
     // Phase 2: 256-column chunks with cached norms
     nk_u32_t column_norms_cache[256];
-    for (nk_size_t chunk_start = 0; chunk_start < n_vectors; chunk_start += 256) {
-        nk_size_t chunk_end = chunk_start + 256 < n_vectors ? chunk_start + 256 : n_vectors;
+    for (nk_size_t chunk_start = 0; chunk_start < vectors_count; chunk_start += 256) {
+        nk_size_t chunk_end = chunk_start + 256 < vectors_count ? chunk_start + 256 : vectors_count;
         for (nk_size_t col = chunk_start; col < chunk_end; col++)
             column_norms_cache[col - chunk_start] = nk_dots_reduce_sumsq_i8_(vectors + col * stride_elements, depth);
 
@@ -446,20 +446,20 @@ NK_INTERNAL void nk_euclideans_symmetric_i8_sapphireamx_finalize_(nk_i8_t const 
     for (nk_size_t row = row_start; row < row_start + row_count; row++) result[row * result_stride_elements + row] = 0;
 }
 
-NK_PUBLIC void nk_euclideans_symmetric_i8_sapphireamx(                              //
-    nk_i8_t const *vectors, nk_size_t n_vectors, nk_size_t depth, nk_size_t stride, //
-    nk_f32_t *result, nk_size_t result_stride, nk_size_t row_start, nk_size_t row_count) {
-    nk_size_t const stride_elements = stride / sizeof(nk_i8_t);
-    nk_size_t const result_stride_elements = result_stride / sizeof(nk_f32_t);
-    nk_dots_symmetric_i8_sapphireamx(vectors, n_vectors, depth, stride, (nk_i32_t *)result, result_stride, row_start,
-                                     row_count);
-    nk_euclideans_symmetric_i8_sapphireamx_finalize_(vectors, n_vectors, depth, stride_elements, result,
+NK_PUBLIC void nk_euclideans_symmetric_i8_sapphireamx(                                           //
+    nk_i8_t const *vectors, nk_size_t vectors_count, nk_size_t depth, nk_size_t stride_in_bytes, //
+    nk_f32_t *result, nk_size_t result_stride_in_bytes, nk_size_t row_start, nk_size_t row_count) {
+    nk_size_t const stride_elements = stride_in_bytes / sizeof(nk_i8_t);
+    nk_size_t const result_stride_elements = result_stride_in_bytes / sizeof(nk_f32_t);
+    nk_dots_symmetric_i8_sapphireamx(vectors, vectors_count, depth, stride_in_bytes, (nk_i32_t *)result,
+                                     result_stride_in_bytes, row_start, row_count);
+    nk_euclideans_symmetric_i8_sapphireamx_finalize_(vectors, vectors_count, depth, stride_elements, result,
                                                      result_stride_elements, row_start, row_count);
 }
 
-#pragma endregion // Signed 8-bit Integer Symmetric
+#pragma endregion I8 Symmetric
 
-#pragma region Unsigned 8-bit Integer Packed
+#pragma region U8 Packed
 
 NK_INTERNAL void nk_angulars_packed_u8_sapphireamx_finalize_(nk_u8_t const *a, void const *b_packed, nk_f32_t *c,
                                                              nk_size_t rows, nk_size_t columns, nk_size_t depth,
@@ -508,11 +508,11 @@ NK_PUBLIC void nk_euclideans_packed_u8_sapphireamx(      //
                                                   c_stride_elements);
 }
 
-#pragma endregion // Unsigned 8-bit Integer Packed
+#pragma endregion U8 Packed
 
-#pragma region Unsigned 8-bit Integer Symmetric
+#pragma region U8 Symmetric
 
-NK_INTERNAL void nk_angulars_symmetric_u8_sapphireamx_finalize_(nk_u8_t const *vectors, nk_size_t n_vectors,
+NK_INTERNAL void nk_angulars_symmetric_u8_sapphireamx_finalize_(nk_u8_t const *vectors, nk_size_t vectors_count,
                                                                 nk_size_t depth, nk_size_t stride_elements,
                                                                 nk_f32_t *result, nk_size_t result_stride_elements,
                                                                 nk_size_t row_start, nk_size_t row_count) {
@@ -524,8 +524,8 @@ NK_INTERNAL void nk_angulars_symmetric_u8_sapphireamx_finalize_(nk_u8_t const *v
 
     // Phase 2: 256-column chunks with cached norms
     nk_u32_t column_norms_cache[256];
-    for (nk_size_t chunk_start = 0; chunk_start < n_vectors; chunk_start += 256) {
-        nk_size_t chunk_end = chunk_start + 256 < n_vectors ? chunk_start + 256 : n_vectors;
+    for (nk_size_t chunk_start = 0; chunk_start < vectors_count; chunk_start += 256) {
+        nk_size_t chunk_end = chunk_start + 256 < vectors_count ? chunk_start + 256 : vectors_count;
         for (nk_size_t col = chunk_start; col < chunk_end; col++)
             column_norms_cache[col - chunk_start] = nk_dots_reduce_sumsq_u8_(vectors + col * stride_elements, depth);
 
@@ -543,18 +543,18 @@ NK_INTERNAL void nk_angulars_symmetric_u8_sapphireamx_finalize_(nk_u8_t const *v
     for (nk_size_t row = row_start; row < row_start + row_count; row++) result[row * result_stride_elements + row] = 0;
 }
 
-NK_PUBLIC void nk_angulars_symmetric_u8_sapphireamx(                                //
-    nk_u8_t const *vectors, nk_size_t n_vectors, nk_size_t depth, nk_size_t stride, //
-    nk_f32_t *result, nk_size_t result_stride, nk_size_t row_start, nk_size_t row_count) {
-    nk_size_t const stride_elements = stride / sizeof(nk_u8_t);
-    nk_size_t const result_stride_elements = result_stride / sizeof(nk_f32_t);
-    nk_dots_symmetric_u8_sapphireamx(vectors, n_vectors, depth, stride, (nk_u32_t *)result, result_stride, row_start,
-                                     row_count);
-    nk_angulars_symmetric_u8_sapphireamx_finalize_(vectors, n_vectors, depth, stride_elements, result,
+NK_PUBLIC void nk_angulars_symmetric_u8_sapphireamx(                                             //
+    nk_u8_t const *vectors, nk_size_t vectors_count, nk_size_t depth, nk_size_t stride_in_bytes, //
+    nk_f32_t *result, nk_size_t result_stride_in_bytes, nk_size_t row_start, nk_size_t row_count) {
+    nk_size_t const stride_elements = stride_in_bytes / sizeof(nk_u8_t);
+    nk_size_t const result_stride_elements = result_stride_in_bytes / sizeof(nk_f32_t);
+    nk_dots_symmetric_u8_sapphireamx(vectors, vectors_count, depth, stride_in_bytes, (nk_u32_t *)result,
+                                     result_stride_in_bytes, row_start, row_count);
+    nk_angulars_symmetric_u8_sapphireamx_finalize_(vectors, vectors_count, depth, stride_elements, result,
                                                    result_stride_elements, row_start, row_count);
 }
 
-NK_INTERNAL void nk_euclideans_symmetric_u8_sapphireamx_finalize_(nk_u8_t const *vectors, nk_size_t n_vectors,
+NK_INTERNAL void nk_euclideans_symmetric_u8_sapphireamx_finalize_(nk_u8_t const *vectors, nk_size_t vectors_count,
                                                                   nk_size_t depth, nk_size_t stride_elements,
                                                                   nk_f32_t *result, nk_size_t result_stride_elements,
                                                                   nk_size_t row_start, nk_size_t row_count) {
@@ -566,8 +566,8 @@ NK_INTERNAL void nk_euclideans_symmetric_u8_sapphireamx_finalize_(nk_u8_t const 
 
     // Phase 2: 256-column chunks with cached norms
     nk_u32_t column_norms_cache[256];
-    for (nk_size_t chunk_start = 0; chunk_start < n_vectors; chunk_start += 256) {
-        nk_size_t chunk_end = chunk_start + 256 < n_vectors ? chunk_start + 256 : n_vectors;
+    for (nk_size_t chunk_start = 0; chunk_start < vectors_count; chunk_start += 256) {
+        nk_size_t chunk_end = chunk_start + 256 < vectors_count ? chunk_start + 256 : vectors_count;
         for (nk_size_t col = chunk_start; col < chunk_end; col++)
             column_norms_cache[col - chunk_start] = nk_dots_reduce_sumsq_u8_(vectors + col * stride_elements, depth);
 
@@ -585,18 +585,18 @@ NK_INTERNAL void nk_euclideans_symmetric_u8_sapphireamx_finalize_(nk_u8_t const 
     for (nk_size_t row = row_start; row < row_start + row_count; row++) result[row * result_stride_elements + row] = 0;
 }
 
-NK_PUBLIC void nk_euclideans_symmetric_u8_sapphireamx(                              //
-    nk_u8_t const *vectors, nk_size_t n_vectors, nk_size_t depth, nk_size_t stride, //
-    nk_f32_t *result, nk_size_t result_stride, nk_size_t row_start, nk_size_t row_count) {
-    nk_size_t const stride_elements = stride / sizeof(nk_u8_t);
-    nk_size_t const result_stride_elements = result_stride / sizeof(nk_f32_t);
-    nk_dots_symmetric_u8_sapphireamx(vectors, n_vectors, depth, stride, (nk_u32_t *)result, result_stride, row_start,
-                                     row_count);
-    nk_euclideans_symmetric_u8_sapphireamx_finalize_(vectors, n_vectors, depth, stride_elements, result,
+NK_PUBLIC void nk_euclideans_symmetric_u8_sapphireamx(                                           //
+    nk_u8_t const *vectors, nk_size_t vectors_count, nk_size_t depth, nk_size_t stride_in_bytes, //
+    nk_f32_t *result, nk_size_t result_stride_in_bytes, nk_size_t row_start, nk_size_t row_count) {
+    nk_size_t const stride_elements = stride_in_bytes / sizeof(nk_u8_t);
+    nk_size_t const result_stride_elements = result_stride_in_bytes / sizeof(nk_f32_t);
+    nk_dots_symmetric_u8_sapphireamx(vectors, vectors_count, depth, stride_in_bytes, (nk_u32_t *)result,
+                                     result_stride_in_bytes, row_start, row_count);
+    nk_euclideans_symmetric_u8_sapphireamx_finalize_(vectors, vectors_count, depth, stride_elements, result,
                                                      result_stride_elements, row_start, row_count);
 }
 
-#pragma endregion // Unsigned 8-bit Integer Symmetric
+#pragma endregion U8 Symmetric
 
 #pragma region E4M3 Packed
 
@@ -646,7 +646,7 @@ NK_PUBLIC void nk_euclideans_packed_e4m3_sapphireamx(      //
                                                     c_stride_elements);
 }
 
-#pragma endregion // E4M3 Packed
+#pragma endregion E4M3 Packed
 
 #pragma region E5M2 Packed
 
@@ -696,11 +696,11 @@ NK_PUBLIC void nk_euclideans_packed_e5m2_sapphireamx(      //
                                                     c_stride_elements);
 }
 
-#pragma endregion // E5M2 Packed
+#pragma endregion E5M2 Packed
 
 #pragma region E5M2 Symmetric
 
-NK_INTERNAL void nk_angulars_symmetric_e5m2_sapphireamx_finalize_(nk_e5m2_t const *vectors, nk_size_t n_vectors,
+NK_INTERNAL void nk_angulars_symmetric_e5m2_sapphireamx_finalize_(nk_e5m2_t const *vectors, nk_size_t vectors_count,
                                                                   nk_size_t depth, nk_size_t stride_elements,
                                                                   nk_f32_t *result, nk_size_t result_stride_elements,
                                                                   nk_size_t row_start, nk_size_t row_count) {
@@ -711,8 +711,8 @@ NK_INTERNAL void nk_angulars_symmetric_e5m2_sapphireamx_finalize_(nk_e5m2_t cons
 
     // Phase 2: 256-column chunks with cached norms
     nk_f32_t column_norms_cache[256];
-    for (nk_size_t chunk_start = 0; chunk_start < n_vectors; chunk_start += 256) {
-        nk_size_t chunk_end = chunk_start + 256 < n_vectors ? chunk_start + 256 : n_vectors;
+    for (nk_size_t chunk_start = 0; chunk_start < vectors_count; chunk_start += 256) {
+        nk_size_t chunk_end = chunk_start + 256 < vectors_count ? chunk_start + 256 : vectors_count;
         for (nk_size_t col = chunk_start; col < chunk_end; col++)
             column_norms_cache[col - chunk_start] = nk_dots_reduce_sumsq_e5m2_(vectors + col * stride_elements, depth);
 
@@ -729,18 +729,18 @@ NK_INTERNAL void nk_angulars_symmetric_e5m2_sapphireamx_finalize_(nk_e5m2_t cons
     for (nk_size_t row = row_start; row < row_start + row_count; row++) result[row * result_stride_elements + row] = 0;
 }
 
-NK_PUBLIC void nk_angulars_symmetric_e5m2_sapphireamx(                                //
-    nk_e5m2_t const *vectors, nk_size_t n_vectors, nk_size_t depth, nk_size_t stride, //
-    nk_f32_t *result, nk_size_t result_stride, nk_size_t row_start, nk_size_t row_count) {
-    nk_size_t const stride_elements = stride / sizeof(nk_e5m2_t);
-    nk_size_t const result_stride_elements = result_stride / sizeof(nk_f32_t);
-    nk_dots_symmetric_e5m2_sapphireamx(vectors, n_vectors, depth, stride, (nk_f32_t *)result, result_stride, row_start,
-                                       row_count);
-    nk_angulars_symmetric_e5m2_sapphireamx_finalize_(vectors, n_vectors, depth, stride_elements, result,
+NK_PUBLIC void nk_angulars_symmetric_e5m2_sapphireamx(                                             //
+    nk_e5m2_t const *vectors, nk_size_t vectors_count, nk_size_t depth, nk_size_t stride_in_bytes, //
+    nk_f32_t *result, nk_size_t result_stride_in_bytes, nk_size_t row_start, nk_size_t row_count) {
+    nk_size_t const stride_elements = stride_in_bytes / sizeof(nk_e5m2_t);
+    nk_size_t const result_stride_elements = result_stride_in_bytes / sizeof(nk_f32_t);
+    nk_dots_symmetric_e5m2_sapphireamx(vectors, vectors_count, depth, stride_in_bytes, (nk_f32_t *)result,
+                                       result_stride_in_bytes, row_start, row_count);
+    nk_angulars_symmetric_e5m2_sapphireamx_finalize_(vectors, vectors_count, depth, stride_elements, result,
                                                      result_stride_elements, row_start, row_count);
 }
 
-NK_INTERNAL void nk_euclideans_symmetric_e5m2_sapphireamx_finalize_(nk_e5m2_t const *vectors, nk_size_t n_vectors,
+NK_INTERNAL void nk_euclideans_symmetric_e5m2_sapphireamx_finalize_(nk_e5m2_t const *vectors, nk_size_t vectors_count,
                                                                     nk_size_t depth, nk_size_t stride_elements,
                                                                     nk_f32_t *result, nk_size_t result_stride_elements,
                                                                     nk_size_t row_start, nk_size_t row_count) {
@@ -751,8 +751,8 @@ NK_INTERNAL void nk_euclideans_symmetric_e5m2_sapphireamx_finalize_(nk_e5m2_t co
 
     // Phase 2: 256-column chunks with cached norms
     nk_f32_t column_norms_cache[256];
-    for (nk_size_t chunk_start = 0; chunk_start < n_vectors; chunk_start += 256) {
-        nk_size_t chunk_end = chunk_start + 256 < n_vectors ? chunk_start + 256 : n_vectors;
+    for (nk_size_t chunk_start = 0; chunk_start < vectors_count; chunk_start += 256) {
+        nk_size_t chunk_end = chunk_start + 256 < vectors_count ? chunk_start + 256 : vectors_count;
         for (nk_size_t col = chunk_start; col < chunk_end; col++)
             column_norms_cache[col - chunk_start] = nk_dots_reduce_sumsq_e5m2_(vectors + col * stride_elements, depth);
 
@@ -769,22 +769,22 @@ NK_INTERNAL void nk_euclideans_symmetric_e5m2_sapphireamx_finalize_(nk_e5m2_t co
     for (nk_size_t row = row_start; row < row_start + row_count; row++) result[row * result_stride_elements + row] = 0;
 }
 
-NK_PUBLIC void nk_euclideans_symmetric_e5m2_sapphireamx(                              //
-    nk_e5m2_t const *vectors, nk_size_t n_vectors, nk_size_t depth, nk_size_t stride, //
-    nk_f32_t *result, nk_size_t result_stride, nk_size_t row_start, nk_size_t row_count) {
-    nk_size_t const stride_elements = stride / sizeof(nk_e5m2_t);
-    nk_size_t const result_stride_elements = result_stride / sizeof(nk_f32_t);
-    nk_dots_symmetric_e5m2_sapphireamx(vectors, n_vectors, depth, stride, (nk_f32_t *)result, result_stride, row_start,
-                                       row_count);
-    nk_euclideans_symmetric_e5m2_sapphireamx_finalize_(vectors, n_vectors, depth, stride_elements, result,
+NK_PUBLIC void nk_euclideans_symmetric_e5m2_sapphireamx(                                           //
+    nk_e5m2_t const *vectors, nk_size_t vectors_count, nk_size_t depth, nk_size_t stride_in_bytes, //
+    nk_f32_t *result, nk_size_t result_stride_in_bytes, nk_size_t row_start, nk_size_t row_count) {
+    nk_size_t const stride_elements = stride_in_bytes / sizeof(nk_e5m2_t);
+    nk_size_t const result_stride_elements = result_stride_in_bytes / sizeof(nk_f32_t);
+    nk_dots_symmetric_e5m2_sapphireamx(vectors, vectors_count, depth, stride_in_bytes, (nk_f32_t *)result,
+                                       result_stride_in_bytes, row_start, row_count);
+    nk_euclideans_symmetric_e5m2_sapphireamx_finalize_(vectors, vectors_count, depth, stride_elements, result,
                                                        result_stride_elements, row_start, row_count);
 }
 
-#pragma endregion // E5M2 Symmetric
+#pragma endregion E5M2 Symmetric
 
 #pragma region E4M3 Symmetric
 
-NK_INTERNAL void nk_angulars_symmetric_e4m3_sapphireamx_finalize_(nk_e4m3_t const *vectors, nk_size_t n_vectors,
+NK_INTERNAL void nk_angulars_symmetric_e4m3_sapphireamx_finalize_(nk_e4m3_t const *vectors, nk_size_t vectors_count,
                                                                   nk_size_t depth, nk_size_t stride_elements,
                                                                   nk_f32_t *result, nk_size_t result_stride_elements,
                                                                   nk_size_t row_start, nk_size_t row_count) {
@@ -795,8 +795,8 @@ NK_INTERNAL void nk_angulars_symmetric_e4m3_sapphireamx_finalize_(nk_e4m3_t cons
 
     // Phase 2: 256-column chunks with cached norms
     nk_f32_t column_norms_cache[256];
-    for (nk_size_t chunk_start = 0; chunk_start < n_vectors; chunk_start += 256) {
-        nk_size_t chunk_end = chunk_start + 256 < n_vectors ? chunk_start + 256 : n_vectors;
+    for (nk_size_t chunk_start = 0; chunk_start < vectors_count; chunk_start += 256) {
+        nk_size_t chunk_end = chunk_start + 256 < vectors_count ? chunk_start + 256 : vectors_count;
         for (nk_size_t col = chunk_start; col < chunk_end; col++)
             column_norms_cache[col - chunk_start] = nk_dots_reduce_sumsq_e4m3_(vectors + col * stride_elements, depth);
 
@@ -813,18 +813,18 @@ NK_INTERNAL void nk_angulars_symmetric_e4m3_sapphireamx_finalize_(nk_e4m3_t cons
     for (nk_size_t row = row_start; row < row_start + row_count; row++) result[row * result_stride_elements + row] = 0;
 }
 
-NK_PUBLIC void nk_angulars_symmetric_e4m3_sapphireamx(                                //
-    nk_e4m3_t const *vectors, nk_size_t n_vectors, nk_size_t depth, nk_size_t stride, //
-    nk_f32_t *result, nk_size_t result_stride, nk_size_t row_start, nk_size_t row_count) {
-    nk_size_t const stride_elements = stride / sizeof(nk_e4m3_t);
-    nk_size_t const result_stride_elements = result_stride / sizeof(nk_f32_t);
-    nk_dots_symmetric_e4m3_sapphireamx(vectors, n_vectors, depth, stride, (nk_f32_t *)result, result_stride, row_start,
-                                       row_count);
-    nk_angulars_symmetric_e4m3_sapphireamx_finalize_(vectors, n_vectors, depth, stride_elements, result,
+NK_PUBLIC void nk_angulars_symmetric_e4m3_sapphireamx(                                             //
+    nk_e4m3_t const *vectors, nk_size_t vectors_count, nk_size_t depth, nk_size_t stride_in_bytes, //
+    nk_f32_t *result, nk_size_t result_stride_in_bytes, nk_size_t row_start, nk_size_t row_count) {
+    nk_size_t const stride_elements = stride_in_bytes / sizeof(nk_e4m3_t);
+    nk_size_t const result_stride_elements = result_stride_in_bytes / sizeof(nk_f32_t);
+    nk_dots_symmetric_e4m3_sapphireamx(vectors, vectors_count, depth, stride_in_bytes, (nk_f32_t *)result,
+                                       result_stride_in_bytes, row_start, row_count);
+    nk_angulars_symmetric_e4m3_sapphireamx_finalize_(vectors, vectors_count, depth, stride_elements, result,
                                                      result_stride_elements, row_start, row_count);
 }
 
-NK_INTERNAL void nk_euclideans_symmetric_e4m3_sapphireamx_finalize_(nk_e4m3_t const *vectors, nk_size_t n_vectors,
+NK_INTERNAL void nk_euclideans_symmetric_e4m3_sapphireamx_finalize_(nk_e4m3_t const *vectors, nk_size_t vectors_count,
                                                                     nk_size_t depth, nk_size_t stride_elements,
                                                                     nk_f32_t *result, nk_size_t result_stride_elements,
                                                                     nk_size_t row_start, nk_size_t row_count) {
@@ -835,8 +835,8 @@ NK_INTERNAL void nk_euclideans_symmetric_e4m3_sapphireamx_finalize_(nk_e4m3_t co
 
     // Phase 2: 256-column chunks with cached norms
     nk_f32_t column_norms_cache[256];
-    for (nk_size_t chunk_start = 0; chunk_start < n_vectors; chunk_start += 256) {
-        nk_size_t chunk_end = chunk_start + 256 < n_vectors ? chunk_start + 256 : n_vectors;
+    for (nk_size_t chunk_start = 0; chunk_start < vectors_count; chunk_start += 256) {
+        nk_size_t chunk_end = chunk_start + 256 < vectors_count ? chunk_start + 256 : vectors_count;
         for (nk_size_t col = chunk_start; col < chunk_end; col++)
             column_norms_cache[col - chunk_start] = nk_dots_reduce_sumsq_e4m3_(vectors + col * stride_elements, depth);
 
@@ -853,18 +853,18 @@ NK_INTERNAL void nk_euclideans_symmetric_e4m3_sapphireamx_finalize_(nk_e4m3_t co
     for (nk_size_t row = row_start; row < row_start + row_count; row++) result[row * result_stride_elements + row] = 0;
 }
 
-NK_PUBLIC void nk_euclideans_symmetric_e4m3_sapphireamx(                              //
-    nk_e4m3_t const *vectors, nk_size_t n_vectors, nk_size_t depth, nk_size_t stride, //
-    nk_f32_t *result, nk_size_t result_stride, nk_size_t row_start, nk_size_t row_count) {
-    nk_size_t const stride_elements = stride / sizeof(nk_e4m3_t);
-    nk_size_t const result_stride_elements = result_stride / sizeof(nk_f32_t);
-    nk_dots_symmetric_e4m3_sapphireamx(vectors, n_vectors, depth, stride, (nk_f32_t *)result, result_stride, row_start,
-                                       row_count);
-    nk_euclideans_symmetric_e4m3_sapphireamx_finalize_(vectors, n_vectors, depth, stride_elements, result,
+NK_PUBLIC void nk_euclideans_symmetric_e4m3_sapphireamx(                                           //
+    nk_e4m3_t const *vectors, nk_size_t vectors_count, nk_size_t depth, nk_size_t stride_in_bytes, //
+    nk_f32_t *result, nk_size_t result_stride_in_bytes, nk_size_t row_start, nk_size_t row_count) {
+    nk_size_t const stride_elements = stride_in_bytes / sizeof(nk_e4m3_t);
+    nk_size_t const result_stride_elements = result_stride_in_bytes / sizeof(nk_f32_t);
+    nk_dots_symmetric_e4m3_sapphireamx(vectors, vectors_count, depth, stride_in_bytes, (nk_f32_t *)result,
+                                       result_stride_in_bytes, row_start, row_count);
+    nk_euclideans_symmetric_e4m3_sapphireamx_finalize_(vectors, vectors_count, depth, stride_elements, result,
                                                        result_stride_elements, row_start, row_count);
 }
 
-#pragma endregion // E4M3 Symmetric
+#pragma endregion E4M3 Symmetric
 
 #pragma region E2M3 Packed
 
@@ -914,11 +914,11 @@ NK_PUBLIC void nk_euclideans_packed_e2m3_sapphireamx(      //
                                                     c_stride_elements);
 }
 
-#pragma endregion // E2M3 Packed
+#pragma endregion E2M3 Packed
 
 #pragma region E2M3 Symmetric
 
-NK_INTERNAL void nk_angulars_symmetric_e2m3_sapphireamx_finalize_(nk_e2m3_t const *vectors, nk_size_t n_vectors,
+NK_INTERNAL void nk_angulars_symmetric_e2m3_sapphireamx_finalize_(nk_e2m3_t const *vectors, nk_size_t vectors_count,
                                                                   nk_size_t depth, nk_size_t stride_elements,
                                                                   nk_f32_t *result, nk_size_t result_stride_elements,
                                                                   nk_size_t row_start, nk_size_t row_count) {
@@ -929,8 +929,8 @@ NK_INTERNAL void nk_angulars_symmetric_e2m3_sapphireamx_finalize_(nk_e2m3_t cons
 
     // Phase 2: 256-column chunks with cached norms
     nk_f32_t column_norms_cache[256];
-    for (nk_size_t chunk_start = 0; chunk_start < n_vectors; chunk_start += 256) {
-        nk_size_t chunk_end = chunk_start + 256 < n_vectors ? chunk_start + 256 : n_vectors;
+    for (nk_size_t chunk_start = 0; chunk_start < vectors_count; chunk_start += 256) {
+        nk_size_t chunk_end = chunk_start + 256 < vectors_count ? chunk_start + 256 : vectors_count;
         for (nk_size_t col = chunk_start; col < chunk_end; col++)
             column_norms_cache[col - chunk_start] = nk_dots_reduce_sumsq_e2m3_(vectors + col * stride_elements, depth);
 
@@ -947,18 +947,18 @@ NK_INTERNAL void nk_angulars_symmetric_e2m3_sapphireamx_finalize_(nk_e2m3_t cons
     for (nk_size_t row = row_start; row < row_start + row_count; row++) result[row * result_stride_elements + row] = 0;
 }
 
-NK_PUBLIC void nk_angulars_symmetric_e2m3_sapphireamx(                                //
-    nk_e2m3_t const *vectors, nk_size_t n_vectors, nk_size_t depth, nk_size_t stride, //
-    nk_f32_t *result, nk_size_t result_stride, nk_size_t row_start, nk_size_t row_count) {
-    nk_size_t const stride_elements = stride / sizeof(nk_e2m3_t);
-    nk_size_t const result_stride_elements = result_stride / sizeof(nk_f32_t);
-    nk_dots_symmetric_e2m3_sapphireamx(vectors, n_vectors, depth, stride, (nk_f32_t *)result, result_stride, row_start,
-                                       row_count);
-    nk_angulars_symmetric_e2m3_sapphireamx_finalize_(vectors, n_vectors, depth, stride_elements, result,
+NK_PUBLIC void nk_angulars_symmetric_e2m3_sapphireamx(                                             //
+    nk_e2m3_t const *vectors, nk_size_t vectors_count, nk_size_t depth, nk_size_t stride_in_bytes, //
+    nk_f32_t *result, nk_size_t result_stride_in_bytes, nk_size_t row_start, nk_size_t row_count) {
+    nk_size_t const stride_elements = stride_in_bytes / sizeof(nk_e2m3_t);
+    nk_size_t const result_stride_elements = result_stride_in_bytes / sizeof(nk_f32_t);
+    nk_dots_symmetric_e2m3_sapphireamx(vectors, vectors_count, depth, stride_in_bytes, (nk_f32_t *)result,
+                                       result_stride_in_bytes, row_start, row_count);
+    nk_angulars_symmetric_e2m3_sapphireamx_finalize_(vectors, vectors_count, depth, stride_elements, result,
                                                      result_stride_elements, row_start, row_count);
 }
 
-NK_INTERNAL void nk_euclideans_symmetric_e2m3_sapphireamx_finalize_(nk_e2m3_t const *vectors, nk_size_t n_vectors,
+NK_INTERNAL void nk_euclideans_symmetric_e2m3_sapphireamx_finalize_(nk_e2m3_t const *vectors, nk_size_t vectors_count,
                                                                     nk_size_t depth, nk_size_t stride_elements,
                                                                     nk_f32_t *result, nk_size_t result_stride_elements,
                                                                     nk_size_t row_start, nk_size_t row_count) {
@@ -969,8 +969,8 @@ NK_INTERNAL void nk_euclideans_symmetric_e2m3_sapphireamx_finalize_(nk_e2m3_t co
 
     // Phase 2: 256-column chunks with cached norms
     nk_f32_t column_norms_cache[256];
-    for (nk_size_t chunk_start = 0; chunk_start < n_vectors; chunk_start += 256) {
-        nk_size_t chunk_end = chunk_start + 256 < n_vectors ? chunk_start + 256 : n_vectors;
+    for (nk_size_t chunk_start = 0; chunk_start < vectors_count; chunk_start += 256) {
+        nk_size_t chunk_end = chunk_start + 256 < vectors_count ? chunk_start + 256 : vectors_count;
         for (nk_size_t col = chunk_start; col < chunk_end; col++)
             column_norms_cache[col - chunk_start] = nk_dots_reduce_sumsq_e2m3_(vectors + col * stride_elements, depth);
 
@@ -987,18 +987,18 @@ NK_INTERNAL void nk_euclideans_symmetric_e2m3_sapphireamx_finalize_(nk_e2m3_t co
     for (nk_size_t row = row_start; row < row_start + row_count; row++) result[row * result_stride_elements + row] = 0;
 }
 
-NK_PUBLIC void nk_euclideans_symmetric_e2m3_sapphireamx(                              //
-    nk_e2m3_t const *vectors, nk_size_t n_vectors, nk_size_t depth, nk_size_t stride, //
-    nk_f32_t *result, nk_size_t result_stride, nk_size_t row_start, nk_size_t row_count) {
-    nk_size_t const stride_elements = stride / sizeof(nk_e2m3_t);
-    nk_size_t const result_stride_elements = result_stride / sizeof(nk_f32_t);
-    nk_dots_symmetric_e2m3_sapphireamx(vectors, n_vectors, depth, stride, (nk_f32_t *)result, result_stride, row_start,
-                                       row_count);
-    nk_euclideans_symmetric_e2m3_sapphireamx_finalize_(vectors, n_vectors, depth, stride_elements, result,
+NK_PUBLIC void nk_euclideans_symmetric_e2m3_sapphireamx(                                           //
+    nk_e2m3_t const *vectors, nk_size_t vectors_count, nk_size_t depth, nk_size_t stride_in_bytes, //
+    nk_f32_t *result, nk_size_t result_stride_in_bytes, nk_size_t row_start, nk_size_t row_count) {
+    nk_size_t const stride_elements = stride_in_bytes / sizeof(nk_e2m3_t);
+    nk_size_t const result_stride_elements = result_stride_in_bytes / sizeof(nk_f32_t);
+    nk_dots_symmetric_e2m3_sapphireamx(vectors, vectors_count, depth, stride_in_bytes, (nk_f32_t *)result,
+                                       result_stride_in_bytes, row_start, row_count);
+    nk_euclideans_symmetric_e2m3_sapphireamx_finalize_(vectors, vectors_count, depth, stride_elements, result,
                                                        result_stride_elements, row_start, row_count);
 }
 
-#pragma endregion // E2M3 Symmetric
+#pragma endregion E2M3 Symmetric
 
 #pragma region E3M2 Packed
 
@@ -1048,11 +1048,11 @@ NK_PUBLIC void nk_euclideans_packed_e3m2_sapphireamx(      //
                                                     c_stride_elements);
 }
 
-#pragma endregion // E3M2 Packed
+#pragma endregion E3M2 Packed
 
 #pragma region E3M2 Symmetric
 
-NK_INTERNAL void nk_angulars_symmetric_e3m2_sapphireamx_finalize_(nk_e3m2_t const *vectors, nk_size_t n_vectors,
+NK_INTERNAL void nk_angulars_symmetric_e3m2_sapphireamx_finalize_(nk_e3m2_t const *vectors, nk_size_t vectors_count,
                                                                   nk_size_t depth, nk_size_t stride_elements,
                                                                   nk_f32_t *result, nk_size_t result_stride_elements,
                                                                   nk_size_t row_start, nk_size_t row_count) {
@@ -1063,8 +1063,8 @@ NK_INTERNAL void nk_angulars_symmetric_e3m2_sapphireamx_finalize_(nk_e3m2_t cons
 
     // Phase 2: 256-column chunks with cached norms
     nk_f32_t column_norms_cache[256];
-    for (nk_size_t chunk_start = 0; chunk_start < n_vectors; chunk_start += 256) {
-        nk_size_t chunk_end = chunk_start + 256 < n_vectors ? chunk_start + 256 : n_vectors;
+    for (nk_size_t chunk_start = 0; chunk_start < vectors_count; chunk_start += 256) {
+        nk_size_t chunk_end = chunk_start + 256 < vectors_count ? chunk_start + 256 : vectors_count;
         for (nk_size_t col = chunk_start; col < chunk_end; col++)
             column_norms_cache[col - chunk_start] = nk_dots_reduce_sumsq_e3m2_(vectors + col * stride_elements, depth);
 
@@ -1081,18 +1081,18 @@ NK_INTERNAL void nk_angulars_symmetric_e3m2_sapphireamx_finalize_(nk_e3m2_t cons
     for (nk_size_t row = row_start; row < row_start + row_count; row++) result[row * result_stride_elements + row] = 0;
 }
 
-NK_PUBLIC void nk_angulars_symmetric_e3m2_sapphireamx(                                //
-    nk_e3m2_t const *vectors, nk_size_t n_vectors, nk_size_t depth, nk_size_t stride, //
-    nk_f32_t *result, nk_size_t result_stride, nk_size_t row_start, nk_size_t row_count) {
-    nk_size_t const stride_elements = stride / sizeof(nk_e3m2_t);
-    nk_size_t const result_stride_elements = result_stride / sizeof(nk_f32_t);
-    nk_dots_symmetric_e3m2_sapphireamx(vectors, n_vectors, depth, stride, (nk_f32_t *)result, result_stride, row_start,
-                                       row_count);
-    nk_angulars_symmetric_e3m2_sapphireamx_finalize_(vectors, n_vectors, depth, stride_elements, result,
+NK_PUBLIC void nk_angulars_symmetric_e3m2_sapphireamx(                                             //
+    nk_e3m2_t const *vectors, nk_size_t vectors_count, nk_size_t depth, nk_size_t stride_in_bytes, //
+    nk_f32_t *result, nk_size_t result_stride_in_bytes, nk_size_t row_start, nk_size_t row_count) {
+    nk_size_t const stride_elements = stride_in_bytes / sizeof(nk_e3m2_t);
+    nk_size_t const result_stride_elements = result_stride_in_bytes / sizeof(nk_f32_t);
+    nk_dots_symmetric_e3m2_sapphireamx(vectors, vectors_count, depth, stride_in_bytes, (nk_f32_t *)result,
+                                       result_stride_in_bytes, row_start, row_count);
+    nk_angulars_symmetric_e3m2_sapphireamx_finalize_(vectors, vectors_count, depth, stride_elements, result,
                                                      result_stride_elements, row_start, row_count);
 }
 
-NK_INTERNAL void nk_euclideans_symmetric_e3m2_sapphireamx_finalize_(nk_e3m2_t const *vectors, nk_size_t n_vectors,
+NK_INTERNAL void nk_euclideans_symmetric_e3m2_sapphireamx_finalize_(nk_e3m2_t const *vectors, nk_size_t vectors_count,
                                                                     nk_size_t depth, nk_size_t stride_elements,
                                                                     nk_f32_t *result, nk_size_t result_stride_elements,
                                                                     nk_size_t row_start, nk_size_t row_count) {
@@ -1103,8 +1103,8 @@ NK_INTERNAL void nk_euclideans_symmetric_e3m2_sapphireamx_finalize_(nk_e3m2_t co
 
     // Phase 2: 256-column chunks with cached norms
     nk_f32_t column_norms_cache[256];
-    for (nk_size_t chunk_start = 0; chunk_start < n_vectors; chunk_start += 256) {
-        nk_size_t chunk_end = chunk_start + 256 < n_vectors ? chunk_start + 256 : n_vectors;
+    for (nk_size_t chunk_start = 0; chunk_start < vectors_count; chunk_start += 256) {
+        nk_size_t chunk_end = chunk_start + 256 < vectors_count ? chunk_start + 256 : vectors_count;
         for (nk_size_t col = chunk_start; col < chunk_end; col++)
             column_norms_cache[col - chunk_start] = nk_dots_reduce_sumsq_e3m2_(vectors + col * stride_elements, depth);
 
@@ -1121,18 +1121,18 @@ NK_INTERNAL void nk_euclideans_symmetric_e3m2_sapphireamx_finalize_(nk_e3m2_t co
     for (nk_size_t row = row_start; row < row_start + row_count; row++) result[row * result_stride_elements + row] = 0;
 }
 
-NK_PUBLIC void nk_euclideans_symmetric_e3m2_sapphireamx(                              //
-    nk_e3m2_t const *vectors, nk_size_t n_vectors, nk_size_t depth, nk_size_t stride, //
-    nk_f32_t *result, nk_size_t result_stride, nk_size_t row_start, nk_size_t row_count) {
-    nk_size_t const stride_elements = stride / sizeof(nk_e3m2_t);
-    nk_size_t const result_stride_elements = result_stride / sizeof(nk_f32_t);
-    nk_dots_symmetric_e3m2_sapphireamx(vectors, n_vectors, depth, stride, (nk_f32_t *)result, result_stride, row_start,
-                                       row_count);
-    nk_euclideans_symmetric_e3m2_sapphireamx_finalize_(vectors, n_vectors, depth, stride_elements, result,
+NK_PUBLIC void nk_euclideans_symmetric_e3m2_sapphireamx(                                           //
+    nk_e3m2_t const *vectors, nk_size_t vectors_count, nk_size_t depth, nk_size_t stride_in_bytes, //
+    nk_f32_t *result, nk_size_t result_stride_in_bytes, nk_size_t row_start, nk_size_t row_count) {
+    nk_size_t const stride_elements = stride_in_bytes / sizeof(nk_e3m2_t);
+    nk_size_t const result_stride_elements = result_stride_in_bytes / sizeof(nk_f32_t);
+    nk_dots_symmetric_e3m2_sapphireamx(vectors, vectors_count, depth, stride_in_bytes, (nk_f32_t *)result,
+                                       result_stride_in_bytes, row_start, row_count);
+    nk_euclideans_symmetric_e3m2_sapphireamx_finalize_(vectors, vectors_count, depth, stride_elements, result,
                                                        result_stride_elements, row_start, row_count);
 }
 
-#pragma endregion // E3M2 Symmetric
+#pragma endregion E3M2 Symmetric
 
 #if defined(__clang__)
 #pragma clang attribute pop
@@ -1145,5 +1145,5 @@ NK_PUBLIC void nk_euclideans_symmetric_e3m2_sapphireamx(                        
 #endif
 
 #endif // NK_TARGET_SAPPHIREAMX
-#endif // NK_TARGET_X86_
+#endif // NK_TARGET_X8664_
 #endif // NK_SPATIALS_SAPPHIREAMX_H

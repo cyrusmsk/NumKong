@@ -45,7 +45,7 @@
 #ifndef NK_MAXSIM_SAPPHIREAMX_H
 #define NK_MAXSIM_SAPPHIREAMX_H
 
-#if NK_TARGET_X86_
+#if NK_TARGET_X8664_
 #if NK_TARGET_SAPPHIREAMX
 
 #include "numkong/types.h"
@@ -70,7 +70,7 @@ extern "C" {
                    "avx512fp16", "f16c", "fma", "bmi", "bmi2", "amx-tile", "amx-bf16", "amx-int8")
 #endif
 
-#pragma region i8 Header (for f32/f16 coarse+refine)
+#pragma region I8 Header
 
 /**
  *  i8 packed buffer header for AMX coarse+refine MaxSim (64 bytes).
@@ -92,9 +92,9 @@ typedef struct {
 
 NK_STATIC_ASSERT(sizeof(nk_maxsim_sapphireamx_i8_header_t) == 64, nk_maxsim_sapphireamx_i8_header_must_be_64_bytes);
 
-#pragma endregion
+#pragma endregion I8 Header
 
-#pragma region Single Precision Floats
+#pragma region F32 Floats
 
 NK_PUBLIC nk_size_t nk_maxsim_packed_size_f32_sapphireamx(nk_size_t vector_count, nk_size_t depth) {
     nk_size_t column_tile_count = nk_size_divide_round_up_(vector_count, 16);
@@ -108,7 +108,7 @@ NK_PUBLIC nk_size_t nk_maxsim_packed_size_f32_sapphireamx(nk_size_t vector_count
 }
 
 NK_PUBLIC void nk_maxsim_pack_f32_sapphireamx( //
-    nk_f32_t const *vectors, nk_size_t vector_count, nk_size_t depth, nk_size_t stride, void *packed) {
+    nk_f32_t const *vectors, nk_size_t vector_count, nk_size_t depth, nk_size_t stride_in_bytes, void *packed) {
 
     nk_size_t column_tile_count = nk_size_divide_round_up_(vector_count, 16);
     nk_size_t depth_tile_count = nk_size_divide_round_up_(depth, 64);
@@ -147,7 +147,7 @@ NK_PUBLIC void nk_maxsim_pack_f32_sapphireamx( //
 
     // Quantize vectors and scatter into A-side tiles, copy originals, compute inverse norms
     for (nk_size_t vector_index = 0; vector_index < vector_count; vector_index++) {
-        nk_f32_t const *source_vector = (nk_f32_t const *)((char const *)vectors + vector_index * stride);
+        nk_f32_t const *source_vector = (nk_f32_t const *)((char const *)vectors + vector_index * stride_in_bytes);
 
         // Pass 1: find absmax and norm_squared
         nk_f32_t absmax_f32 = 0.0f;
@@ -347,9 +347,9 @@ NK_PUBLIC void nk_maxsim_packed_f32_sapphireamx( //
     *result = total_angular_distance_f64;
 }
 
-#pragma endregion
+#pragma endregion F32 Floats
 
-#pragma region Half Precision Floats
+#pragma region F16 Floats
 
 NK_PUBLIC nk_size_t nk_maxsim_packed_size_f16_sapphireamx(nk_size_t vector_count, nk_size_t depth) {
     nk_size_t column_tile_count = nk_size_divide_round_up_(vector_count, 16);
@@ -363,7 +363,7 @@ NK_PUBLIC nk_size_t nk_maxsim_packed_size_f16_sapphireamx(nk_size_t vector_count
 }
 
 NK_PUBLIC void nk_maxsim_pack_f16_sapphireamx( //
-    nk_f16_t const *vectors, nk_size_t vector_count, nk_size_t depth, nk_size_t stride, void *packed) {
+    nk_f16_t const *vectors, nk_size_t vector_count, nk_size_t depth, nk_size_t stride_in_bytes, void *packed) {
 
     nk_size_t column_tile_count = nk_size_divide_round_up_(vector_count, 16);
     nk_size_t depth_tile_count = nk_size_divide_round_up_(depth, 64);
@@ -401,7 +401,7 @@ NK_PUBLIC void nk_maxsim_pack_f16_sapphireamx( //
     }
 
     // Quantize vectors and scatter into A-side tiles, copy originals, compute inverse norms
-    nk_size_t const stride_elements = stride / sizeof(nk_f16_t);
+    nk_size_t const stride_elements = stride_in_bytes / sizeof(nk_f16_t);
     for (nk_size_t vector_index = 0; vector_index < vector_count; vector_index++) {
         nk_f16_t const *source_vector = vectors + vector_index * stride_elements;
 
@@ -602,9 +602,9 @@ NK_PUBLIC void nk_maxsim_packed_f16_sapphireamx( //
     *result = (nk_f32_t)total_angular_distance_f64;
 }
 
-#pragma endregion
+#pragma endregion F16 Floats
 
-#pragma region Brain Floats (Fused AMX)
+#pragma region BF16 Floats
 
 /**
  *  BF16 packed buffer header for AMX fused MaxSim (64 bytes).
@@ -635,10 +635,10 @@ NK_PUBLIC nk_size_t nk_maxsim_packed_size_bf16_sapphireamx(nk_size_t vector_coun
 }
 
 NK_PUBLIC void nk_maxsim_pack_bf16_sapphireamx( //
-    nk_bf16_t const *vectors, nk_size_t vector_count, nk_size_t depth, nk_size_t stride, void *packed) {
+    nk_bf16_t const *vectors, nk_size_t vector_count, nk_size_t depth, nk_size_t stride_in_bytes, void *packed) {
 
     nk_size_t const tile_bytes = 1024;
-    nk_size_t const stride_elements = stride / sizeof(nk_bf16_t);
+    nk_size_t const stride_elements = stride_in_bytes / sizeof(nk_bf16_t);
     nk_size_t column_tile_count = nk_size_divide_round_up_(vector_count, 16);
     nk_size_t depth_tile_count = nk_size_divide_round_up_(depth, 32);
 
@@ -860,7 +860,7 @@ NK_PUBLIC void nk_maxsim_packed_bf16_sapphireamx( //
     *result = (nk_f32_t)total_angular_distance_f64;
 }
 
-#pragma endregion
+#pragma endregion BF16 Floats
 
 #if defined(__clang__)
 #pragma clang attribute pop
@@ -873,5 +873,5 @@ NK_PUBLIC void nk_maxsim_packed_bf16_sapphireamx( //
 #endif
 
 #endif // NK_TARGET_SAPPHIREAMX
-#endif // NK_TARGET_X86_
+#endif // NK_TARGET_X8664_
 #endif // NK_MAXSIM_SAPPHIREAMX_H

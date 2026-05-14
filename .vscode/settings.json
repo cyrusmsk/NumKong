@@ -1,11 +1,12 @@
 {
-    "C_Cpp.default.cppStandard": "c++23",
+    "C_Cpp.default.compilerPath": "/usr/bin/g++-14",
+    "C_Cpp.default.cppStandard": "c++20",
     "C_Cpp.default.includePath": [
         "${workspaceFolder}/include"
     ],
     "clangd.arguments": [
         "--compile-commands-dir=${workspaceFolder}",
-        "-std=c++23"
+        "-std=c++20"
     ],
     "clangd.fallbackFlags": [
         "-I${workspaceFolder}/include"
@@ -166,6 +167,7 @@
         "__tree": "cpp",
         "__tuple": "cpp",
         "__verbose_abort": "cpp",
+        "*.gyp": "jsonc",
         "*.tcc": "cpp",
         "algorithm": "cpp",
         "arm_neon.h": "c",
@@ -250,9 +252,11 @@
         "vector": "cpp"
     },
     "python.testing.pytestArgs": [
-        "scripts/test.py"
+        "test"
     ],
     "python.testing.pytestEnabled": true,
     "python.testing.unittestEnabled": false,
-    "rust-analyzer.rustfmt.extraArgs": ["+nightly"]
+    "rust-analyzer.rustfmt.extraArgs": [
+        "+nightly"
+    ]
 }

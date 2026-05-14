@@ -1,27 +1,27 @@
 #!/usr/bin/env python3
 """Test geospatial distances: nk.haversine, nk.vincenty.
 
-Covers dtypes: float64, float32.
-Parametrized over: ndim from dense_dimensions, capability from possible_capabilities.
-
-Precision notes:
-    Haversine uses atol=10.0, rtol=1e-2 — the great-circle formula at f32 accumulates
-    rounding in intermediate trig computations.
-    Vincenty at f32 can show >40% relative error near antipodal points due to its
-    iterative algorithm; rtol=1.0 is used for f32 vs 1e-2 for f64.
-    Known-value test verifies New York → Los Angeles ≈ 3940 km.
-
+Dtypes: float64, float32.
+Baselines: NumPy great-circle and iterative Vincenty formulas.
+Vincenty at float32 shows high relative error near antipodal points.
 Matches C++ suite: test_geospatial.cpp.
 """
 
 import atexit
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import pytest
 
+if TYPE_CHECKING:
+    import numpy as np  # static-analysis-only; the runtime try/except below is authoritative
+
 try:
     import numpy as np
-except:  # noqa: E722
-    np = None
+
+    numpy_available = True
+except Exception:
+    numpy_available = False
 
 import numkong as nk
 from test_base import (
@@ -132,55 +132,49 @@ def baseline_vincenty(
     return polar_radius * coefficient_a * (sigma - delta_sigma)
 
 
-KERNELS_GEOSPATIAL = {
+KERNELS_GEOSPATIAL: dict[str, tuple[Callable, Callable, None]] = {
     "haversine": (baseline_haversine, nk.haversine, None),
     "vincenty": (baseline_vincenty, nk.vincenty, None),
 }
 
 
-@pytest.mark.skipif(not numpy_available, reason="NumPy is not installed")
-@pytest.mark.repeat(randomized_repetitions_count)
-@pytest.mark.parametrize("ndim", dense_dimensions)
-@pytest.mark.parametrize("dtype", ["float64", "float32"])
-@pytest.mark.parametrize("capability", possible_capabilities)
-def test_haversine_random_accuracy(ndim, dtype, capability):
-    """Haversine great-circle distance against Vincenty baseline for random coordinates."""
-    keep_one_capability(capability)
+def _check_geospatial_accuracy(metric, ndim, dtype, coord_scale, atol, rtol):
+    """Shared accuracy check for geospatial kernels."""
+    baseline_kernel, simd_kernel, _ = KERNELS_GEOSPATIAL[metric]
 
     lat_scale = min(_max_angle_rad, np.pi) / 2
     lon_scale = min(_max_angle_rad, np.pi)
-    first_latitudes = (np.random.rand(ndim) - 0.5) * 2 * lat_scale
-    first_longitudes = (np.random.rand(ndim) - 0.5) * 2 * lon_scale
-    second_latitudes = (np.random.rand(ndim) - 0.5) * 2 * lat_scale
-    second_longitudes = (np.random.rand(ndim) - 0.5) * 2 * lon_scale
+    first_latitudes = ((np.random.rand(ndim) - 0.5) * 2 * lat_scale * coord_scale).astype(dtype)
+    first_longitudes = ((np.random.rand(ndim) - 0.5) * 2 * lon_scale * coord_scale).astype(dtype)
+    second_latitudes = ((np.random.rand(ndim) - 0.5) * 2 * lat_scale * coord_scale).astype(dtype)
+    second_longitudes = ((np.random.rand(ndim) - 0.5) * 2 * lon_scale * coord_scale).astype(dtype)
 
-    first_latitudes = first_latitudes.astype(dtype)
-    first_longitudes = first_longitudes.astype(dtype)
-    second_latitudes = second_latitudes.astype(dtype)
-    second_longitudes = second_longitudes.astype(dtype)
-
-    def _haversine_loop(lat1, lon1, lat2, lon2):
-        return np.array([baseline_haversine(lat1[i], lon1[i], lat2[i], lon2[i]) for i in range(len(lat1))])
+    def _baseline_loop(lat1, lon1, lat2, lon2):
+        return np.array([baseline_kernel(lat1[i], lon1[i], lat2[i], lon2[i]) for i in range(len(lat1))])
 
     accurate_dt, accurate = profile(
-        _haversine_loop,
+        _baseline_loop,
         first_latitudes.astype(np.float64),
         first_longitudes.astype(np.float64),
         second_latitudes.astype(np.float64),
         second_longitudes.astype(np.float64),
     )
     expected_dt, expected = profile(
-        _haversine_loop, first_latitudes, first_longitudes, second_latitudes, second_longitudes
+        _baseline_loop, first_latitudes, first_longitudes, second_latitudes, second_longitudes
     )
 
-    result_dt, result = profile(nk.haversine, first_latitudes, first_longitudes, second_latitudes, second_longitudes)
+    result_dt, result = profile(simd_kernel, first_latitudes, first_longitudes, second_latitudes, second_longitudes)
     result = np.asarray(result)
 
-    absolute_tolerance = 10.0
-    relative_tolerance = 1e-2
-    assert_allclose(result, accurate, atol=absolute_tolerance, rtol=relative_tolerance)
+    assert_allclose(result, accurate, atol=atol, rtol=rtol)
 
-    collect_errors("haversine", ndim, dtype, accurate, accurate_dt, expected, expected_dt, result, result_dt, stats)
+    # out= with nk.Tensor buffer
+    out_nk = nk.zeros((ndim,), dtype=dtype)
+    ret = simd_kernel(first_latitudes, first_longitudes, second_latitudes, second_longitudes, out=out_nk)
+    assert ret is None
+    assert_allclose(np.asarray(out_nk), result, atol=1e-10, rtol=1e-10)
+
+    collect_errors(metric, ndim, dtype, accurate, accurate_dt, expected, expected_dt, result, result_dt, stats)
 
 
 @pytest.mark.skipif(not numpy_available, reason="NumPy is not installed")
@@ -188,49 +182,22 @@ def test_haversine_random_accuracy(ndim, dtype, capability):
 @pytest.mark.parametrize("ndim", dense_dimensions)
 @pytest.mark.parametrize("dtype", ["float64", "float32"])
 @pytest.mark.parametrize("capability", possible_capabilities)
-def test_vincenty_random_accuracy(ndim, dtype, capability):
-    """Vincenty ellipsoidal geodesic distance against GeoPy baseline for random coordinates."""
+def test_haversine_random_accuracy(ndim: int, dtype: str, capability: str):
+    """Haversine great-circle distance against baseline for random coordinates."""
     keep_one_capability(capability)
+    _check_geospatial_accuracy("haversine", ndim, dtype, coord_scale=1.0, atol=10.0, rtol=1e-2)
 
-    lat_scale = min(_max_angle_rad, np.pi) / 2
-    lon_scale = min(_max_angle_rad, np.pi)
-    first_latitudes = (np.random.rand(ndim) - 0.5) * 2 * lat_scale * 0.9
-    first_longitudes = (np.random.rand(ndim) - 0.5) * 2 * lon_scale * 0.9
-    second_latitudes = (np.random.rand(ndim) - 0.5) * 2 * lat_scale * 0.9
-    second_longitudes = (np.random.rand(ndim) - 0.5) * 2 * lon_scale * 0.9
 
-    first_latitudes = first_latitudes.astype(dtype)
-    first_longitudes = first_longitudes.astype(dtype)
-    second_latitudes = second_latitudes.astype(dtype)
-    second_longitudes = second_longitudes.astype(dtype)
-
-    def _vincenty_loop(lat1, lon1, lat2, lon2):
-        return np.array([baseline_vincenty(lat1[i], lon1[i], lat2[i], lon2[i]) for i in range(len(lat1))])
-
-    accurate_dt, accurate = profile(
-        _vincenty_loop,
-        first_latitudes.astype(np.float64),
-        first_longitudes.astype(np.float64),
-        second_latitudes.astype(np.float64),
-        second_longitudes.astype(np.float64),
-    )
-    expected_dt, expected = profile(
-        _vincenty_loop, first_latitudes, first_longitudes, second_latitudes, second_longitudes
-    )
-
-    result_dt, result = profile(nk.vincenty, first_latitudes, first_longitudes, second_latitudes, second_longitudes)
-    result = np.asarray(result)
-
-    # Vincenty's iterative algorithm at f32 precision accumulates significant
-    # rounding error in intermediate trig computations, especially near antipodal
-    # points. The f64 baseline converges to ~1e-12 but f32 cannot go below ~1e-7,
-    # leading to path-dependent drift in the final distance. Near-antipodal cases
-    # can show >40% relative error at f32 — this is inherent to the algorithm.
-    absolute_tolerance = 100.0
-    relative_tolerance = 1.0 if dtype == "float32" else 1e-2
-    assert_allclose(result, accurate, atol=absolute_tolerance, rtol=relative_tolerance)
-
-    collect_errors("vincenty", ndim, dtype, accurate, accurate_dt, expected, expected_dt, result, result_dt, stats)
+@pytest.mark.skipif(not numpy_available, reason="NumPy is not installed")
+@pytest.mark.repeat(randomized_repetitions_count)
+@pytest.mark.parametrize("ndim", dense_dimensions)
+@pytest.mark.parametrize("dtype", ["float64", "float32"])
+@pytest.mark.parametrize("capability", possible_capabilities)
+def test_vincenty_random_accuracy(ndim: int, dtype: str, capability: str):
+    """Vincenty ellipsoidal geodesic distance against baseline for random coordinates."""
+    keep_one_capability(capability)
+    rtol = 1.0 if dtype == "float32" else 1e-2
+    _check_geospatial_accuracy("vincenty", ndim, dtype, coord_scale=0.9, atol=100.0, rtol=rtol)
 
 
 @pytest.mark.skipif(not numpy_available, reason="NumPy is not installed")
@@ -252,26 +219,8 @@ def test_haversine_known():
     assert 3800 < result_kilometers < 4100, f"Expected ~3940 km, got {result_kilometers:.0f} km"
 
 
-@pytest.mark.skipif(not numpy_available, reason="NumPy is not installed")
-def test_haversine_out_parameter():
-    """The out= parameter writes haversine results to a pre-allocated buffer."""
-    count = 10
-    first_latitudes = np.random.rand(count).astype(np.float64) * np.pi - np.pi / 2
-    first_longitudes = np.random.rand(count).astype(np.float64) * 2 * np.pi - np.pi
-    second_latitudes = np.random.rand(count).astype(np.float64) * np.pi - np.pi / 2
-    second_longitudes = np.random.rand(count).astype(np.float64) * 2 * np.pi - np.pi
-
-    output_distances = np.zeros(count, dtype=np.float64)
-    result = nk.haversine(first_latitudes, first_longitudes, second_latitudes, second_longitudes, out=output_distances)
-    assert result is None, "Expected None when using out parameter"
-    assert np.all(output_distances >= 0), "Output should contain non-negative distances"
-
-    expected = np.array(nk.haversine(first_latitudes, first_longitudes, second_latitudes, second_longitudes))
-    assert_allclose(output_distances, expected)
-
-
 @pytest.mark.parametrize("capability", possible_capabilities)
-def test_haversine_self_zero(capability):
+def test_haversine_self_zero(capability: str):
     """haversine(lat, lon, lat, lon) ~ 0."""
     keep_one_capability(capability)
     lat = nk.full((1,), 0.5, dtype="float64")
@@ -282,7 +231,7 @@ def test_haversine_self_zero(capability):
 
 
 @pytest.mark.parametrize("capability", possible_capabilities)
-def test_vincenty_self_zero(capability):
+def test_vincenty_self_zero(capability: str):
     """vincenty(lat, lon, lat, lon) ~ 0."""
     keep_one_capability(capability)
     lat = nk.full((1,), 0.5, dtype="float64")

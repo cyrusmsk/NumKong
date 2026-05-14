@@ -1,23 +1,26 @@
 #!/usr/bin/env python3
-"""Test MaxSim (ColBERT late-interaction): nk.maxsim, nk.maxsim_pack, nk.maxsim_packed.
+"""Test MaxSim late-interaction scoring: nk.maxsim, nk.maxsim_pack, nk.maxsim_packed.
 
-Covers dtypes: float32, bfloat16, float16.
-Parametrized over: capability from possible_capabilities.
-
-Precision notes:
-    MaxSim computes angular distances via coarse screening + fine pass.
-    float16 carries wider quantization noise. bfloat16 cannot be represented
-    in NumPy; tests verify finiteness and non-negativity only.
+Dtypes: float32, bfloat16, float16.
+Baselines: high-precision Decimal angular distances, NumPy reference.
+Matches C++ suite: test_maxsim.cpp.
 """
 
 import atexit
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import pytest
 
+if TYPE_CHECKING:
+    import numpy as np  # static-analysis-only; the runtime try/except below is authoritative
+
 try:
     import numpy as np
-except:  # noqa: E722
-    np = None
+
+    numpy_available = True
+except Exception:
+    numpy_available = False
 
 import numkong as nk
 from test_base import (
@@ -30,9 +33,13 @@ from test_base import (
     nk_seed,  # noqa: F401 — pytest fixture
     numpy_available,
     possible_capabilities,
+    precise_decimal,
     print_stats_report,
-    randomized_repetitions_count,
+    reduced_repetitions_count,
     seed_rng,  # noqa: F401 — pytest fixture (autouse)
+    test_depth_dimensions,
+    test_height_dimensions,
+    test_width_dimensions,
 )
 
 stats = create_stats()
@@ -41,7 +48,7 @@ atexit.register(print_stats_report, stats)
 _MAXSIM_DTYPE = {"float32": "f32", "bfloat16": "bf16", "float16": "f16"}
 
 
-def baseline_maxsim(queries, documents):
+def baseline_maxsim(queries, documents, dtype=None):
     """Pure NumPy reference: sum of per-query minimum angular distances."""
     total = 0.0
     for q in queries:
@@ -58,6 +65,38 @@ def baseline_maxsim(queries, documents):
     return total
 
 
+def precise_maxsim(queries, documents, dtype=None):
+    """High-precision MaxSim via Python Decimal: sum of per-query min angular distances."""
+    with precise_decimal(dtype) as (upcast, sqrt, _ln):
+        total = upcast(0)
+        for query_vector in queries:
+            query_values = [upcast(value) for value in query_vector]
+            norm_query = sqrt(sum(value * value for value in query_values))
+            min_angular = None
+            for document_vector in documents:
+                dot_product = upcast(0)
+                norm_squared = upcast(0)
+                for query_value, document_value in zip(query_values, document_vector):
+                    document_precise = upcast(document_value)
+                    dot_product += query_value * document_precise
+                    norm_squared += document_precise * document_precise
+                norm_document = sqrt(norm_squared)
+                if norm_query > 0 and norm_document > 0:
+                    cosine_similarity = dot_product / (norm_query * norm_document)
+                    angular = max(upcast(0), upcast(1) - cosine_similarity)
+                else:
+                    angular = upcast(1)
+                if min_angular is None or angular < min_angular:
+                    min_angular = angular
+            total += min_angular
+        return float(total)
+
+
+KERNELS_MAXSIM: dict[str, tuple[Callable, Callable, Callable]] = {
+    "maxsim": (baseline_maxsim, nk.maxsim, precise_maxsim),
+}
+
+
 def _make_matrix(rows, cols, dtype):
     """Create a test matrix in the target dtype."""
     raw, _ = downcast_f32_to_dtype(np.random.randn(rows, cols).astype(np.float32), dtype)
@@ -65,22 +104,25 @@ def _make_matrix(rows, cols, dtype):
 
 
 @pytest.mark.skipif(not numpy_available, reason="NumPy is not installed")
-@pytest.mark.repeat(randomized_repetitions_count)
+@pytest.mark.repeat(reduced_repetitions_count)
+@pytest.mark.parametrize("rows", test_height_dimensions)
+@pytest.mark.parametrize("columns", test_width_dimensions)
+@pytest.mark.parametrize("depth", test_depth_dimensions)
 @pytest.mark.parametrize("dtype", ["float32", "bfloat16", "float16"])
 @pytest.mark.parametrize("capability", possible_capabilities)
-def test_maxsim_pack_and_packed(dtype, capability):
+def test_maxsim_pack_and_packed(rows: int, columns: int, depth: int, dtype: str, capability: str):
     """Pack + compute vs baseline."""
     keep_one_capability(capability)
-    n_q, n_d, depth = 8, 16, 64
+    baseline_kernel, _, precise_kernel = KERNELS_MAXSIM["maxsim"]
     dtype_str = _MAXSIM_DTYPE[dtype]
-    queries = _make_matrix(n_q, depth, dtype)
-    documents = _make_matrix(n_d, depth, dtype)
+    queries = _make_matrix(rows, depth, dtype)
+    documents = _make_matrix(columns, depth, dtype)
 
     qp = nk.maxsim_pack(queries, dtype=dtype_str)
     dp = nk.maxsim_pack(documents, dtype=dtype_str)
 
     assert isinstance(qp, nk.MaxSimPackedMatrix)
-    assert qp.vector_count == n_q
+    assert qp.vector_count == rows
     assert qp.depth == depth
     assert qp.nbytes > 0
     assert repr(qp)  # smoke-test repr doesn't crash
@@ -95,7 +137,7 @@ def test_maxsim_pack_and_packed(dtype, capability):
     if dtype != "bfloat16":
         q_np = np.array(queries, dtype=dtype)
         d_np = np.array(documents, dtype=dtype)
-        expected = baseline_maxsim(q_np, d_np)
+        expected = baseline_kernel(q_np, d_np, dtype=dtype_str)
         rel_err = abs(result - expected) / max(abs(expected), 1e-12)
         if rel_err > 0.1:
             collect_warnings(f"maxsim_packed({dtype}) rel_err={rel_err:.4f}", stats)
@@ -104,7 +146,7 @@ def test_maxsim_pack_and_packed(dtype, capability):
 @pytest.mark.skipif(not numpy_available, reason="NumPy is not installed")
 @pytest.mark.parametrize("dtype", ["float32", "bfloat16", "float16"])
 @pytest.mark.parametrize("capability", possible_capabilities)
-def test_maxsim_convenience(dtype, capability):
+def test_maxsim_convenience(dtype: str, capability: str):
     """Verify maxsim() matches maxsim_pack + maxsim_packed."""
     keep_one_capability(capability)
     n_q, n_d, depth = 4, 8, 32
@@ -118,13 +160,14 @@ def test_maxsim_convenience(dtype, capability):
     packed_result = nk.maxsim_packed(qp, dp)
 
     # Convenience path
-    conv_result = nk.maxsim(queries, documents, dtype=dtype_str)
+    _, simd_kernel, _ = KERNELS_MAXSIM["maxsim"]
+    conv_result = simd_kernel(queries, documents, dtype=dtype_str)
 
     assert_allclose(packed_result, conv_result)
 
 
 @pytest.mark.parametrize("capability", possible_capabilities)
-def test_maxsim_self_zero(capability):
+def test_maxsim_self_zero(capability: str):
     """Identical queries and documents should give score near zero."""
     keep_one_capability(capability)
     vectors = nk.ones((8, 64), dtype="float32")
@@ -133,7 +176,7 @@ def test_maxsim_self_zero(capability):
 
 
 @pytest.mark.parametrize("capability", possible_capabilities)
-def test_maxsim_type_errors(capability, nk_seed):
+def test_maxsim_type_errors(capability: str, nk_seed: int):
     """Wrong type and mismatched dtype/depth."""
     keep_one_capability(capability)
     query = nk.hash((4, 32), seed=nk_seed, dtype="float32")
@@ -155,7 +198,7 @@ def test_maxsim_type_errors(capability, nk_seed):
 
 
 @pytest.mark.parametrize("capability", possible_capabilities)
-def test_maxsim_packed_size(capability):
+def test_maxsim_packed_size(capability: str):
     """Verify classmethod packed_size returns a positive integer."""
     keep_one_capability(capability)
     size = nk.MaxSimPackedMatrix.packed_size(8, 64, dtype="bf16")

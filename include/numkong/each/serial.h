@@ -76,6 +76,29 @@ extern "C" {
         }                                                                                                             \
     }
 
+/*  Keep the serial instantiations below actually scalar, regardless of build type.
+ *  Without this, -O3 + LTO can vectorize or clone the serial kernels under AVX-512
+ *  callers in dispatch_*.c, which wastes binary and breaks the nk_*_serial-as-scalar-oracle
+ *  contract. See dots/serial.h. */
+#if defined(__clang__)
+#pragma clang attribute push(__attribute__((noinline)), apply_to = function)
+#elif defined(__GNUC__)
+#pragma GCC push_options
+#pragma GCC optimize("no-tree-vectorize", "no-tree-slp-vectorize", "no-ipa-cp-clone", "no-inline")
+#endif
+
+/* Size bias for release. Gated on NDEBUG so Debug builds keep -O0 for stepping. */
+#if defined(NDEBUG)
+#if defined(_MSC_VER)
+#pragma optimize("s", on)
+#elif defined(__clang__)
+#pragma clang attribute push(__attribute__((minsize)), apply_to = function)
+#elif defined(__GNUC__)
+#pragma GCC push_options
+#pragma GCC optimize("Os")
+#endif
+#endif
+
 nk_define_each_sum_(f64, f64, nk_assign_from_to_, nk_assign_from_to_)        // nk_each_sum_f64_serial
 nk_define_each_sum_(f32, f32, nk_assign_from_to_, nk_assign_from_to_)        // nk_each_sum_f32_serial
 nk_define_each_sum_(f16, f32, nk_f16_to_f32_serial, nk_f32_to_f16_serial)    // nk_each_sum_f16_serial
@@ -107,8 +130,8 @@ nk_define_each_scale_(i16, f32, nk_assign_from_to_, nk_f32_to_i16_serial)      /
 nk_define_each_scale_(u16, f32, nk_assign_from_to_, nk_f32_to_u16_serial)      // nk_each_scale_u16_serial
 nk_define_each_scale_(i32, f64, nk_assign_from_to_, nk_f64_to_i32_serial)      // nk_each_scale_i32_serial
 nk_define_each_scale_(u32, f64, nk_assign_from_to_, nk_f64_to_u32_serial)      // nk_each_scale_u32_serial
-nk_define_each_scale_(i64, f64, nk_assign_from_to_, nk_f64_to_i64_serial)      // nk_each_scale_i64_serial
-nk_define_each_scale_(u64, f64, nk_assign_from_to_, nk_f64_to_u64_serial)      // nk_each_scale_u64_serial
+nk_define_each_scale_(i64, f64, nk_f64_from_i64_, nk_f64_to_i64_serial)        // nk_each_scale_i64_serial
+nk_define_each_scale_(u64, f64, nk_f64_from_u64_, nk_f64_to_u64_serial)        // nk_each_scale_u64_serial
 
 nk_define_each_blend_(f64, f64, nk_assign_from_to_, nk_assign_from_to_)        // nk_each_blend_f64_serial
 nk_define_each_blend_(f32, f32, nk_assign_from_to_, nk_assign_from_to_)        // nk_each_blend_f32_serial
@@ -124,8 +147,8 @@ nk_define_each_blend_(i16, f32, nk_assign_from_to_, nk_f32_to_i16_serial)      /
 nk_define_each_blend_(u16, f32, nk_assign_from_to_, nk_f32_to_u16_serial)      // nk_each_blend_u16_serial
 nk_define_each_blend_(i32, f64, nk_assign_from_to_, nk_f64_to_i32_serial)      // nk_each_blend_i32_serial
 nk_define_each_blend_(u32, f64, nk_assign_from_to_, nk_f64_to_u32_serial)      // nk_each_blend_u32_serial
-nk_define_each_blend_(i64, f64, nk_assign_from_to_, nk_f64_to_i64_serial)      // nk_each_blend_i64_serial
-nk_define_each_blend_(u64, f64, nk_assign_from_to_, nk_f64_to_u64_serial)      // nk_each_blend_u64_serial
+nk_define_each_blend_(i64, f64, nk_f64_from_i64_, nk_f64_to_i64_serial)        // nk_each_blend_i64_serial
+nk_define_each_blend_(u64, f64, nk_f64_from_u64_, nk_f64_to_u64_serial)        // nk_each_blend_u64_serial
 
 nk_define_each_fma_(f64, f64, nk_assign_from_to_, nk_assign_from_to_)        // nk_each_fma_f64_serial
 nk_define_each_fma_(f32, f32, nk_assign_from_to_, nk_assign_from_to_)        // nk_each_fma_f32_serial
@@ -141,8 +164,8 @@ nk_define_each_fma_(i16, f32, nk_assign_from_to_, nk_f32_to_i16_serial)      // 
 nk_define_each_fma_(u16, f32, nk_assign_from_to_, nk_f32_to_u16_serial)      // nk_each_fma_u16_serial
 nk_define_each_fma_(i32, f64, nk_assign_from_to_, nk_f64_to_i32_serial)      // nk_each_fma_i32_serial
 nk_define_each_fma_(u32, f64, nk_assign_from_to_, nk_f64_to_u32_serial)      // nk_each_fma_u32_serial
-nk_define_each_fma_(i64, f64, nk_assign_from_to_, nk_f64_to_i64_serial)      // nk_each_fma_i64_serial
-nk_define_each_fma_(u64, f64, nk_assign_from_to_, nk_f64_to_u64_serial)      // nk_each_fma_u64_serial
+nk_define_each_fma_(i64, f64, nk_f64_from_i64_, nk_f64_to_i64_serial)        // nk_each_fma_i64_serial
+nk_define_each_fma_(u64, f64, nk_f64_from_u64_, nk_f64_to_u64_serial)        // nk_each_fma_u64_serial
 
 #undef nk_define_each_scale_
 #undef nk_define_each_sum_
@@ -252,6 +275,22 @@ NK_PUBLIC void nk_each_fma_f64c_serial(nk_f64c_t const *a, nk_f64c_t const *b, n
         result[i].imag = alpha_product_imag + beta_c_imag;
     }
 }
+
+#if defined(NDEBUG)
+#if defined(_MSC_VER)
+#pragma optimize("", on)
+#elif defined(__clang__)
+#pragma clang attribute pop
+#elif defined(__GNUC__)
+#pragma GCC pop_options
+#endif
+#endif
+
+#if defined(__clang__)
+#pragma clang attribute pop
+#elif defined(__GNUC__)
+#pragma GCC pop_options
+#endif
 
 #if defined(__cplusplus)
 } // extern "C"

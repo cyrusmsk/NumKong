@@ -293,16 +293,12 @@ NK_PUBLIC void nk_dot_u1_neon(nk_u1x8_t const *a, nk_u1x8_t const *b, nk_size_t 
 /** @copydoc nk_dot_f16 */
 NK_PUBLIC void nk_dot_f16_neon(nk_f16_t const *a, nk_f16_t const *b, nk_size_t n, nk_f32_t *result);
 
-#endif // NK_TARGET_NEON
-
-#if NK_TARGET_NEONHALF
-/** @copydoc nk_dot_f16 */
-NK_PUBLIC void nk_dot_f16_neonhalf(nk_f16_t const *a, nk_f16_t const *b, nk_size_t n, nk_f32_t *result);
 /** @copydoc nk_dot_f16c */
-NK_PUBLIC void nk_dot_f16c_neonhalf(nk_f16c_t const *a, nk_f16c_t const *b, nk_size_t n, nk_f32c_t *result);
+NK_PUBLIC void nk_dot_f16c_neon(nk_f16c_t const *a, nk_f16c_t const *b, nk_size_t n, nk_f32c_t *result);
 /** @copydoc nk_vdot_f16c */
-NK_PUBLIC void nk_vdot_f16c_neonhalf(nk_f16c_t const *a, nk_f16c_t const *b, nk_size_t n, nk_f32c_t *result);
-#endif // NK_TARGET_NEONHALF
+NK_PUBLIC void nk_vdot_f16c_neon(nk_f16c_t const *a, nk_f16c_t const *b, nk_size_t n, nk_f32c_t *result);
+
+#endif // NK_TARGET_NEON
 
 #if NK_TARGET_NEONFHM
 /** @copydoc nk_dot_f16 */
@@ -332,6 +328,13 @@ NK_PUBLIC void nk_dot_e2m3_neonsdot(nk_e2m3_t const *a, nk_e2m3_t const *b, nk_s
 NK_PUBLIC void nk_dot_e3m2_neonsdot(nk_e3m2_t const *a, nk_e3m2_t const *b, nk_size_t n, nk_f32_t *result);
 #endif // NK_TARGET_NEONSDOT
 
+#if NK_TARGET_SVESDOT
+/** @copydoc nk_dot_i8 */
+NK_PUBLIC void nk_dot_i8_svesdot(nk_i8_t const *a, nk_i8_t const *b, nk_size_t n, nk_i32_t *result);
+/** @copydoc nk_dot_u8 */
+NK_PUBLIC void nk_dot_u8_svesdot(nk_u8_t const *a, nk_u8_t const *b, nk_size_t n, nk_u32_t *result);
+#endif // NK_TARGET_SVESDOT
+
 #if NK_TARGET_NEONBFDOT
 /** @copydoc nk_dot_bf16 */
 NK_PUBLIC void nk_dot_bf16_neonbfdot(nk_bf16_t const *a, nk_bf16_t const *b, nk_size_t n, nk_f32_t *result);
@@ -345,10 +348,16 @@ NK_PUBLIC void nk_dot_bf16c_neonbfdot(nk_bf16c_t const *a, nk_bf16c_t const *b, 
 NK_PUBLIC void nk_vdot_bf16c_neonbfdot(nk_bf16c_t const *a, nk_bf16c_t const *b, nk_size_t n, nk_f32c_t *result);
 #endif // NK_TARGET_NEONBFDOT
 
-#if NK_TARGET_SVEBFDOT
-/** @copydoc nk_dot_bf16 */
-NK_PUBLIC void nk_dot_bf16_svebfdot(nk_bf16_t const *a, nk_bf16_t const *b, nk_size_t n, nk_f32_t *result);
-#endif // NK_TARGET_SVEBFDOT
+#if NK_TARGET_NEONFP8
+/** @copydoc nk_dot_e4m3 */
+NK_PUBLIC void nk_dot_e4m3_neonfp8(nk_e4m3_t const *a, nk_e4m3_t const *b, nk_size_t n, nk_f32_t *result);
+/** @copydoc nk_dot_e5m2 */
+NK_PUBLIC void nk_dot_e5m2_neonfp8(nk_e5m2_t const *a, nk_e5m2_t const *b, nk_size_t n, nk_f32_t *result);
+/** @copydoc nk_dot_e2m3 */
+NK_PUBLIC void nk_dot_e2m3_neonfp8(nk_e2m3_t const *a, nk_e2m3_t const *b, nk_size_t n, nk_f32_t *result);
+/** @copydoc nk_dot_e3m2 */
+NK_PUBLIC void nk_dot_e3m2_neonfp8(nk_e3m2_t const *a, nk_e3m2_t const *b, nk_size_t n, nk_f32_t *result);
+#endif // NK_TARGET_NEONFP8
 
 #if NK_TARGET_SVE
 /** @copydoc nk_dot_f32 */
@@ -374,6 +383,10 @@ NK_PUBLIC void nk_dot_f16c_svehalf(nk_f16c_t const *a, nk_f16c_t const *b, nk_si
 NK_PUBLIC void nk_vdot_f16c_svehalf(nk_f16c_t const *a, nk_f16c_t const *b, nk_size_t n, nk_f32c_t *result);
 #endif // NK_TARGET_SVEHALF
 
+#if NK_TARGET_SVEBFDOT
+/** @copydoc nk_dot_bf16 */
+NK_PUBLIC void nk_dot_bf16_svebfdot(nk_bf16_t const *a, nk_bf16_t const *b, nk_size_t n, nk_f32_t *result);
+#endif // NK_TARGET_SVEBFDOT
 #if NK_TARGET_HASWELL
 /** @copydoc nk_dot_f32 */
 NK_PUBLIC void nk_dot_f32_haswell(nk_f32_t const *a, nk_f32_t const *b, nk_size_t n, nk_f64_t *result);
@@ -474,6 +487,8 @@ NK_PUBLIC void nk_dot_e2m3_icelake(nk_e2m3_t const *a, nk_e2m3_t const *b, nk_si
 NK_PUBLIC void nk_dot_e3m2_icelake(nk_e3m2_t const *a, nk_e3m2_t const *b, nk_size_t n, nk_f32_t *result);
 /** @copydoc nk_dot_u1 */
 NK_PUBLIC void nk_dot_u1_icelake(nk_u1x8_t const *a, nk_u1x8_t const *b, nk_size_t n_bits, nk_u32_t *result);
+/** @copydoc nk_dot_e4m3 */
+NK_PUBLIC void nk_dot_e4m3_icelake(nk_e4m3_t const *a, nk_e4m3_t const *b, nk_size_t n, nk_f32_t *result);
 #endif // NK_TARGET_ICELAKE
 
 #if NK_TARGET_GENOA
@@ -484,11 +499,18 @@ NK_PUBLIC void nk_dot_bf16c_genoa(nk_bf16c_t const *a, nk_bf16c_t const *b, nk_s
 /** @copydoc nk_vdot_bf16c */
 NK_PUBLIC void nk_vdot_bf16c_genoa(nk_bf16c_t const *a, nk_bf16c_t const *b, nk_size_t n, nk_f32c_t *result);
 
-/** @copydoc nk_dot_e4m3 */
-NK_PUBLIC void nk_dot_e4m3_genoa(nk_e4m3_t const *a, nk_e4m3_t const *b, nk_size_t n, nk_f32_t *result);
 /** @copydoc nk_dot_e5m2 */
 NK_PUBLIC void nk_dot_e5m2_genoa(nk_e5m2_t const *a, nk_e5m2_t const *b, nk_size_t n, nk_f32_t *result);
 #endif // NK_TARGET_GENOA
+
+#if NK_TARGET_DIAMOND
+/** @copydoc nk_dot_f16 */
+NK_PUBLIC void nk_dot_f16_diamond(nk_f16_t const *a, nk_f16_t const *b, nk_size_t n, nk_f32_t *result);
+/** @copydoc nk_dot_e4m3 */
+NK_PUBLIC void nk_dot_e4m3_diamond(nk_e4m3_t const *a, nk_e4m3_t const *b, nk_size_t n, nk_f32_t *result);
+/** @copydoc nk_dot_e5m2 */
+NK_PUBLIC void nk_dot_e5m2_diamond(nk_e5m2_t const *a, nk_e5m2_t const *b, nk_size_t n, nk_f32_t *result);
+#endif // NK_TARGET_DIAMOND
 
 #if NK_TARGET_ALDER
 /** @copydoc nk_dot_i8 */
@@ -638,16 +660,18 @@ NK_INTERNAL nk_dtype_t nk_dot_output_dtype(nk_dtype_t dtype) {
 #include "numkong/dot/serial.h"
 #include "numkong/dot/neon.h"
 #include "numkong/dot/neonsdot.h"
-#include "numkong/dot/neonhalf.h"
 #include "numkong/dot/neonfhm.h"
 #include "numkong/dot/neonbfdot.h"
+#include "numkong/dot/neonfp8.h"
 #include "numkong/dot/sve.h"
 #include "numkong/dot/svehalf.h"
 #include "numkong/dot/svebfdot.h"
+#include "numkong/dot/svesdot.h"
 #include "numkong/dot/haswell.h"
 #include "numkong/dot/skylake.h"
 #include "numkong/dot/icelake.h"
 #include "numkong/dot/genoa.h"
+#include "numkong/dot/diamond.h"
 #include "numkong/dot/sapphire.h"
 #include "numkong/dot/alder.h"
 #include "numkong/dot/sierra.h"
@@ -655,7 +679,9 @@ NK_INTERNAL nk_dtype_t nk_dot_output_dtype(nk_dtype_t dtype) {
 #include "numkong/dot/rvvbb.h"
 #include "numkong/dot/rvvhalf.h"
 #include "numkong/dot/rvvbf16.h"
+#include "numkong/dot/powervsx.h"
 #include "numkong/dot/v128relaxed.h"
+#include "numkong/dot/loongsonasx.h"
 
 #if defined(__cplusplus)
 extern "C" {
@@ -666,8 +692,14 @@ extern "C" {
 NK_PUBLIC void nk_dot_i8(nk_i8_t const *a, nk_i8_t const *b, nk_size_t n, nk_i32_t *result) {
 #if NK_TARGET_V128RELAXED
     nk_dot_i8_v128relaxed(a, b, n, result);
+#elif NK_TARGET_POWERVSX
+    nk_dot_i8_powervsx(a, b, n, result);
+#elif NK_TARGET_LOONGSONASX
+    nk_dot_i8_loongsonasx(a, b, n, result);
 #elif NK_TARGET_RVV
     nk_dot_i8_rvv(a, b, n, result);
+#elif NK_TARGET_SVESDOT
+    nk_dot_i8_svesdot(a, b, n, result);
 #elif NK_TARGET_NEONSDOT
     nk_dot_i8_neonsdot(a, b, n, result);
 #elif NK_TARGET_ICELAKE
@@ -688,8 +720,14 @@ NK_PUBLIC void nk_dot_i8(nk_i8_t const *a, nk_i8_t const *b, nk_size_t n, nk_i32
 NK_PUBLIC void nk_dot_u8(nk_u8_t const *a, nk_u8_t const *b, nk_size_t n, nk_u32_t *result) {
 #if NK_TARGET_V128RELAXED
     nk_dot_u8_v128relaxed(a, b, n, result);
+#elif NK_TARGET_POWERVSX
+    nk_dot_u8_powervsx(a, b, n, result);
+#elif NK_TARGET_LOONGSONASX
+    nk_dot_u8_loongsonasx(a, b, n, result);
 #elif NK_TARGET_RVV
     nk_dot_u8_rvv(a, b, n, result);
+#elif NK_TARGET_SVESDOT
+    nk_dot_u8_svesdot(a, b, n, result);
 #elif NK_TARGET_NEONSDOT
     nk_dot_u8_neonsdot(a, b, n, result);
 #elif NK_TARGET_ICELAKE
@@ -746,6 +784,8 @@ NK_PUBLIC void nk_dot_u1(nk_u1x8_t const *a, nk_u1x8_t const *b, nk_size_t n_bit
     nk_dot_u1_haswell(a, b, n_bits, result);
 #elif NK_TARGET_V128RELAXED
     nk_dot_u1_v128relaxed(a, b, n_bits, result);
+#elif NK_TARGET_POWERVSX
+    nk_dot_u1_powervsx(a, b, n_bits, result);
 #elif NK_TARGET_RVVBB
     nk_dot_u1_rvvbb(a, b, n_bits, result);
 #elif NK_TARGET_RVV
@@ -760,6 +800,8 @@ NK_PUBLIC void nk_dot_u1(nk_u1x8_t const *a, nk_u1x8_t const *b, nk_size_t n_bit
 NK_PUBLIC void nk_dot_f16(nk_f16_t const *a, nk_f16_t const *b, nk_size_t n, nk_f32_t *result) {
 #if NK_TARGET_V128RELAXED
     nk_dot_f16_v128relaxed(a, b, n, result);
+#elif NK_TARGET_POWERVSX
+    nk_dot_f16_powervsx(a, b, n, result);
 #elif NK_TARGET_RVVHALF
     nk_dot_f16_rvvhalf(a, b, n, result);
 #elif NK_TARGET_RVV
@@ -768,10 +810,10 @@ NK_PUBLIC void nk_dot_f16(nk_f16_t const *a, nk_f16_t const *b, nk_size_t n, nk_
     nk_dot_f16_svehalf(a, b, n, result);
 #elif NK_TARGET_NEONFHM
     nk_dot_f16_neonfhm(a, b, n, result);
-#elif NK_TARGET_NEONHALF
-    nk_dot_f16_neonhalf(a, b, n, result);
 #elif NK_TARGET_NEON
     nk_dot_f16_neon(a, b, n, result);
+#elif NK_TARGET_DIAMOND
+    nk_dot_f16_diamond(a, b, n, result);
 #elif NK_TARGET_SKYLAKE
     nk_dot_f16_skylake(a, b, n, result);
 #elif NK_TARGET_HASWELL
@@ -784,6 +826,10 @@ NK_PUBLIC void nk_dot_f16(nk_f16_t const *a, nk_f16_t const *b, nk_size_t n, nk_
 NK_PUBLIC void nk_dot_bf16(nk_bf16_t const *a, nk_bf16_t const *b, nk_size_t n, nk_f32_t *result) {
 #if NK_TARGET_V128RELAXED
     nk_dot_bf16_v128relaxed(a, b, n, result);
+#elif NK_TARGET_POWERVSX
+    nk_dot_bf16_powervsx(a, b, n, result);
+#elif NK_TARGET_LOONGSONASX
+    nk_dot_bf16_loongsonasx(a, b, n, result);
 #elif NK_TARGET_GENOA
     nk_dot_bf16_genoa(a, b, n, result);
 #elif NK_TARGET_RVVBF16
@@ -806,8 +852,12 @@ NK_PUBLIC void nk_dot_bf16(nk_bf16_t const *a, nk_bf16_t const *b, nk_size_t n, 
 }
 
 NK_PUBLIC void nk_dot_e4m3(nk_e4m3_t const *a, nk_e4m3_t const *b, nk_size_t n, nk_f32_t *result) {
-#if NK_TARGET_GENOA
-    nk_dot_e4m3_genoa(a, b, n, result);
+#if NK_TARGET_DIAMOND
+    nk_dot_e4m3_diamond(a, b, n, result);
+#elif NK_TARGET_ICELAKE
+    nk_dot_e4m3_icelake(a, b, n, result);
+#elif NK_TARGET_NEONFP8
+    nk_dot_e4m3_neonfp8(a, b, n, result);
 #elif NK_TARGET_NEONBFDOT
     nk_dot_e4m3_neonbfdot(a, b, n, result);
 #elif NK_TARGET_NEONFHM
@@ -832,8 +882,12 @@ NK_PUBLIC void nk_dot_e4m3(nk_e4m3_t const *a, nk_e4m3_t const *b, nk_size_t n, 
 }
 
 NK_PUBLIC void nk_dot_e5m2(nk_e5m2_t const *a, nk_e5m2_t const *b, nk_size_t n, nk_f32_t *result) {
-#if NK_TARGET_GENOA
+#if NK_TARGET_DIAMOND
+    nk_dot_e5m2_diamond(a, b, n, result);
+#elif NK_TARGET_GENOA
     nk_dot_e5m2_genoa(a, b, n, result);
+#elif NK_TARGET_NEONFP8
+    nk_dot_e5m2_neonfp8(a, b, n, result);
 #elif NK_TARGET_NEONBFDOT
     nk_dot_e5m2_neonbfdot(a, b, n, result);
 #elif NK_TARGET_NEONFHM
@@ -858,7 +912,9 @@ NK_PUBLIC void nk_dot_e5m2(nk_e5m2_t const *a, nk_e5m2_t const *b, nk_size_t n, 
 }
 
 NK_PUBLIC void nk_dot_e2m3(nk_e2m3_t const *a, nk_e2m3_t const *b, nk_size_t n, nk_f32_t *result) {
-#if NK_TARGET_ICELAKE
+#if NK_TARGET_NEONFP8
+    nk_dot_e2m3_neonfp8(a, b, n, result);
+#elif NK_TARGET_ICELAKE
     nk_dot_e2m3_icelake(a, b, n, result);
 #elif NK_TARGET_SKYLAKE
     nk_dot_e2m3_skylake(a, b, n, result);
@@ -882,7 +938,9 @@ NK_PUBLIC void nk_dot_e2m3(nk_e2m3_t const *a, nk_e2m3_t const *b, nk_size_t n, 
 }
 
 NK_PUBLIC void nk_dot_e3m2(nk_e3m2_t const *a, nk_e3m2_t const *b, nk_size_t n, nk_f32_t *result) {
-#if NK_TARGET_ICELAKE
+#if NK_TARGET_NEONFP8
+    nk_dot_e3m2_neonfp8(a, b, n, result);
+#elif NK_TARGET_ICELAKE
     nk_dot_e3m2_icelake(a, b, n, result);
 #elif NK_TARGET_NEONSDOT
     nk_dot_e3m2_neonsdot(a, b, n, result);
@@ -904,6 +962,10 @@ NK_PUBLIC void nk_dot_e3m2(nk_e3m2_t const *a, nk_e3m2_t const *b, nk_size_t n, 
 NK_PUBLIC void nk_dot_f32(nk_f32_t const *a, nk_f32_t const *b, nk_size_t n, nk_f64_t *result) {
 #if NK_TARGET_V128RELAXED
     nk_dot_f32_v128relaxed(a, b, n, result);
+#elif NK_TARGET_POWERVSX
+    nk_dot_f32_powervsx(a, b, n, result);
+#elif NK_TARGET_LOONGSONASX
+    nk_dot_f32_loongsonasx(a, b, n, result);
 #elif NK_TARGET_RVV
     nk_dot_f32_rvv(a, b, n, result);
 #elif NK_TARGET_SVE
@@ -922,6 +984,10 @@ NK_PUBLIC void nk_dot_f32(nk_f32_t const *a, nk_f32_t const *b, nk_size_t n, nk_
 NK_PUBLIC void nk_dot_f64(nk_f64_t const *a, nk_f64_t const *b, nk_size_t n, nk_f64_t *result) {
 #if NK_TARGET_V128RELAXED
     nk_dot_f64_v128relaxed(a, b, n, result);
+#elif NK_TARGET_POWERVSX
+    nk_dot_f64_powervsx(a, b, n, result);
+#elif NK_TARGET_LOONGSONASX
+    nk_dot_f64_loongsonasx(a, b, n, result);
 #elif NK_TARGET_RVV
     nk_dot_f64_rvv(a, b, n, result);
 #elif NK_TARGET_SVE
@@ -942,8 +1008,8 @@ NK_PUBLIC void nk_dot_f16c(nk_f16c_t const *a, nk_f16c_t const *b, nk_size_t n, 
     nk_dot_f16c_svehalf(a, b, n, result);
 #elif NK_TARGET_NEONFHM
     nk_dot_f16c_neonfhm(a, b, n, result);
-#elif NK_TARGET_NEONHALF
-    nk_dot_f16c_neonhalf(a, b, n, result);
+#elif NK_TARGET_NEON
+    nk_dot_f16c_neon(a, b, n, result);
 #elif NK_TARGET_HASWELL
     nk_dot_f16c_haswell(a, b, n, result);
 #else
@@ -1004,8 +1070,8 @@ NK_PUBLIC void nk_vdot_f16c(nk_f16c_t const *a, nk_f16c_t const *b, nk_size_t n,
     nk_vdot_f16c_svehalf(a, b, n, result);
 #elif NK_TARGET_NEONFHM
     nk_vdot_f16c_neonfhm(a, b, n, result);
-#elif NK_TARGET_NEONHALF
-    nk_vdot_f16c_neonhalf(a, b, n, result);
+#elif NK_TARGET_NEON
+    nk_vdot_f16c_neon(a, b, n, result);
 #elif NK_TARGET_HASWELL
     nk_vdot_f16c_haswell(a, b, n, result);
 #else

@@ -95,8 +95,8 @@
 #include "numkong/types.h" // `nk_u64_t`, `NK_DEFINED_LINUX_`
 
 #define NK_VERSION_MAJOR 7
-#define NK_VERSION_MINOR 1
-#define NK_VERSION_PATCH 1
+#define NK_VERSION_MINOR 6
+#define NK_VERSION_PATCH 0
 
 /**
  *  @brief  Removes compile-time dispatching, and replaces it with runtime dispatching.
@@ -132,25 +132,33 @@
 // With `-std=c11` glibc hides `syscall()` behind `_GNU_SOURCE`, but if any
 // system header was included before us, `<features.h>` is already locked.
 // Forward-declare `syscall` directly — it always exists in glibc.
-#if defined(NK_DEFINED_LINUX_) && (NK_TARGET_X86_ || NK_TARGET_RISCV_)
+#if defined(NK_DEFINED_LINUX_) && (NK_TARGET_X8664_ || NK_TARGET_RISCV64_)
 #include <sys/syscall.h> // `SYS_arch_prctl`, `SYS_riscv_hwprobe`
 #ifdef __cplusplus
 extern "C" long syscall(long, ...) noexcept;
 #else
 extern long syscall(long, ...);
 #endif
-#if NK_TARGET_RISCV_
+#if NK_TARGET_RISCV64_
 #include <sys/auxv.h> // `getauxval`, `AT_HWCAP`
 #endif
 #endif
 
+#if defined(NK_DEFINED_LINUX_) && NK_TARGET_LOONGARCH64_
+#include <sys/auxv.h> // `getauxval`, `AT_HWCAP`
+#endif
+
+#if defined(NK_DEFINED_LINUX_) && NK_TARGET_POWER64_
+#include <sys/auxv.h> // `getauxval`, `AT_HWCAP`
+#endif
+
 // On FreeBSD RISC-V, we use elf_aux_info for capability detection
-#if defined(NK_DEFINED_FREEBSD_) && NK_TARGET_RISCV_
+#if defined(NK_DEFINED_FREEBSD_) && NK_TARGET_RISCV64_
 #include <sys/auxv.h> // `elf_aux_info`, `AT_HWCAP`
 #endif
 
 // On Windows ARM, we use IsProcessorFeaturePresent API for capability detection
-#if defined(NK_DEFINED_WINDOWS_) && NK_TARGET_ARM_
+#if defined(NK_DEFINED_WINDOWS_) && NK_TARGET_ARM64_
 #include <processthreadsapi.h> // `IsProcessorFeaturePresent`
 #endif
 
@@ -290,8 +298,12 @@ typedef nk_u64_t nk_capability_t;
 #define nk_cap_rvvbb_k       ((nk_capability_t)1 << 33)
 #define nk_cap_sierra_k      ((nk_capability_t)1 << 34)
 #define nk_cap_smebi32_k     ((nk_capability_t)1 << 35)
+#define nk_cap_loongsonasx_k ((nk_capability_t)1 << 36)
+#define nk_cap_powervsx_k    ((nk_capability_t)1 << 37)
+#define nk_cap_diamond_k     ((nk_capability_t)1 << 38)
+#define nk_cap_neonfp8_k     ((nk_capability_t)1 << 39)
 
-typedef void (*nk_metric_dense_punned_t)(void const *a, void const *b, nk_size_t n, void *d);
+typedef void (*nk_metric_dense_punned_t)(void const *a, void const *b, nk_size_t dimensions, void *result);
 
 typedef void (*nk_sparse_intersect_punned_t)(void const *a, void const *b, nk_size_t a_length, nk_size_t b_length,
                                              void *result, nk_size_t *count);
@@ -299,25 +311,26 @@ typedef void (*nk_sparse_intersect_punned_t)(void const *a, void const *b, nk_si
 typedef void (*nk_sparse_dot_punned_t)(void const *a, void const *b, void const *a_weights, void const *b_weights,
                                        nk_size_t a_length, nk_size_t b_length, void *product);
 
-typedef void (*nk_metric_curved_punned_t)(void const *a, void const *b, void const *c, nk_size_t n, void *d);
+typedef void (*nk_metric_curved_punned_t)(void const *a, void const *b, void const *c, nk_size_t dimensions,
+                                          void *result);
 
 typedef void (*nk_metric_geospatial_punned_t)(void const *a_lats, void const *a_lons, void const *b_lats,
-                                              void const *b_lons, nk_size_t n, void *results);
+                                              void const *b_lons, nk_size_t count, void *results);
 
-typedef void (*nk_each_scale_punned_t)(void const *a, nk_size_t n, void const *alpha, void const *beta, void *y);
+typedef void (*nk_each_scale_punned_t)(void const *a, nk_size_t count, void const *alpha, void const *beta, void *y);
 
-typedef void (*nk_each_sum_punned_t)(void const *a, void const *b, nk_size_t n, void *y);
+typedef void (*nk_each_sum_punned_t)(void const *a, void const *b, nk_size_t count, void *y);
 
-typedef void (*nk_each_blend_punned_t)(void const *a, void const *b, nk_size_t n, void const *alpha, void const *beta,
-                                       void *y);
+typedef void (*nk_each_blend_punned_t)(void const *a, void const *b, nk_size_t count, void const *alpha,
+                                       void const *beta, void *y);
 
-typedef void (*nk_each_fma_punned_t)(void const *a, void const *b, void const *c, nk_size_t n, void const *alpha,
+typedef void (*nk_each_fma_punned_t)(void const *a, void const *b, void const *c, nk_size_t count, void const *alpha,
                                      void const *beta, void *y);
 
-typedef void (*nk_kernel_trigonometry_punned_t)(void const *x, nk_size_t n, void *y);
+typedef void (*nk_kernel_trigonometry_punned_t)(void const *x, nk_size_t count, void *y);
 
-typedef void (*nk_metric_mesh_punned_t)(void const *a, void const *b, nk_size_t n, void *a_centroid, void *b_centroid,
-                                        void *rotation, void *scale, void *d);
+typedef void (*nk_metric_mesh_punned_t)(void const *a, void const *b, nk_size_t points_count, void *a_centroid,
+                                        void *b_centroid, void *rotation, void *scale, void *result);
 
 typedef void (*nk_kernel_reduce_moments_punned_t)(void const *data, nk_size_t count, nk_size_t stride_bytes,
                                                   void *sum_ptr, void *sumsq_ptr);
@@ -326,67 +339,58 @@ typedef void (*nk_kernel_reduce_minmax_punned_t)(void const *data, nk_size_t cou
                                                  void *min_value, nk_size_t *min_index, void *max_value,
                                                  nk_size_t *max_index);
 
-typedef nk_size_t (*nk_dots_packed_size_punned_t)(nk_size_t width, nk_size_t depth);
+typedef nk_size_t (*nk_dots_packed_size_punned_t)(nk_size_t columns, nk_size_t depth);
 
-typedef void (*nk_dots_pack_punned_t)(void const *b, nk_size_t width, nk_size_t depth, nk_size_t b_stride,
+typedef void (*nk_dots_pack_punned_t)(void const *b, nk_size_t columns, nk_size_t depth, nk_size_t b_stride_bytes,
                                       void *b_packed);
 
-typedef void (*nk_dots_packed_punned_t)(void const *a, void const *b_packed, void *c, nk_size_t height, nk_size_t width,
-                                        nk_size_t depth, nk_size_t a_stride, nk_size_t c_stride);
+typedef void (*nk_dots_packed_punned_t)(void const *a, void const *b_packed, void *c, nk_size_t rows, nk_size_t columns,
+                                        nk_size_t depth, nk_size_t a_stride_bytes, nk_size_t c_stride_bytes);
 
-typedef void (*nk_dots_symmetric_punned_t)(void const *vectors, nk_size_t n_vectors, nk_size_t depth, nk_size_t stride,
-                                           void *result, nk_size_t result_stride, nk_size_t row_start,
-                                           nk_size_t row_count);
+typedef void (*nk_dots_symmetric_punned_t)(void const *vectors, nk_size_t vectors_count, nk_size_t depth,
+                                           nk_size_t stride_bytes, void *result, nk_size_t result_stride_bytes,
+                                           nk_size_t row_start, nk_size_t row_count);
 
-typedef void (*nk_hammings_packed_punned_t)(void const *a, void const *b_packed, void *c, nk_size_t height,
-                                            nk_size_t width, nk_size_t depth, nk_size_t a_stride, nk_size_t c_stride);
+typedef void (*nk_hammings_packed_punned_t)(void const *a, void const *b_packed, void *c, nk_size_t rows,
+                                            nk_size_t columns, nk_size_t depth, nk_size_t a_stride_bytes,
+                                            nk_size_t c_stride_bytes);
 
-typedef void (*nk_hammings_symmetric_punned_t)(void const *vectors, nk_size_t n_vectors, nk_size_t depth,
-                                               nk_size_t stride, void *result, nk_size_t result_stride,
+typedef void (*nk_hammings_symmetric_punned_t)(void const *vectors, nk_size_t vectors_count, nk_size_t depth,
+                                               nk_size_t stride_bytes, void *result, nk_size_t result_stride_bytes,
                                                nk_size_t row_start, nk_size_t row_count);
 
-typedef void (*nk_jaccards_packed_punned_t)(void const *a, void const *b_packed, void *c, nk_size_t height,
-                                            nk_size_t width, nk_size_t depth, nk_size_t a_stride, nk_size_t c_stride);
+typedef void (*nk_jaccards_packed_punned_t)(void const *a, void const *b_packed, void *c, nk_size_t rows,
+                                            nk_size_t columns, nk_size_t depth, nk_size_t a_stride_bytes,
+                                            nk_size_t c_stride_bytes);
 
-typedef void (*nk_jaccards_symmetric_punned_t)(void const *vectors, nk_size_t n_vectors, nk_size_t depth,
-                                               nk_size_t stride, void *result, nk_size_t result_stride,
+typedef void (*nk_jaccards_symmetric_punned_t)(void const *vectors, nk_size_t vectors_count, nk_size_t depth,
+                                               nk_size_t stride_bytes, void *result, nk_size_t result_stride_bytes,
                                                nk_size_t row_start, nk_size_t row_count);
 
-typedef void (*nk_angulars_packed_punned_t)(void const *a, void const *b_packed, void *c, nk_size_t height,
-                                            nk_size_t width, nk_size_t depth, nk_size_t a_stride, nk_size_t c_stride);
-typedef void (*nk_angulars_symmetric_punned_t)(void const *vectors, nk_size_t n_vectors, nk_size_t depth,
-                                               nk_size_t stride, void *result, nk_size_t result_stride,
+typedef void (*nk_angulars_packed_punned_t)(void const *a, void const *b_packed, void *c, nk_size_t rows,
+                                            nk_size_t columns, nk_size_t depth, nk_size_t a_stride_bytes,
+                                            nk_size_t c_stride_bytes);
+typedef void (*nk_angulars_symmetric_punned_t)(void const *vectors, nk_size_t vectors_count, nk_size_t depth,
+                                               nk_size_t stride_bytes, void *result, nk_size_t result_stride_bytes,
                                                nk_size_t row_start, nk_size_t row_count);
-typedef void (*nk_euclideans_packed_punned_t)(void const *a, void const *b_packed, void *c, nk_size_t height,
-                                              nk_size_t width, nk_size_t depth, nk_size_t a_stride, nk_size_t c_stride);
-typedef void (*nk_euclideans_symmetric_punned_t)(void const *vectors, nk_size_t n_vectors, nk_size_t depth,
-                                                 nk_size_t stride, void *result, nk_size_t result_stride,
+typedef void (*nk_euclideans_packed_punned_t)(void const *a, void const *b_packed, void *c, nk_size_t rows,
+                                              nk_size_t columns, nk_size_t depth, nk_size_t a_stride_bytes,
+                                              nk_size_t c_stride_bytes);
+typedef void (*nk_euclideans_symmetric_punned_t)(void const *vectors, nk_size_t vectors_count, nk_size_t depth,
+                                                 nk_size_t stride_bytes, void *result, nk_size_t result_stride_bytes,
                                                  nk_size_t row_start, nk_size_t row_count);
 
 typedef void (*nk_maxsim_packed_punned_t)(void const *q_packed, void const *d_packed, nk_size_t query_count,
                                           nk_size_t document_count, nk_size_t depth, void *result);
 
-typedef void (*nk_kernel_cast_punned_t)(void const *from, nk_dtype_t from_type, nk_size_t n, void *to,
+typedef void (*nk_kernel_cast_punned_t)(void const *from, nk_dtype_t from_type, nk_size_t count, void *to,
                                         nk_dtype_t to_type);
 
 typedef void (*nk_kernel_punned_t)(void *);
 
-#if NK_TARGET_X86_
+#if NK_TARGET_X8664_
 
 NK_PUBLIC int nk_configure_thread_x86_(nk_capability_t capabilities) {
-#if defined(_MSC_VER)
-    unsigned int mxcsr = _mm_getcsr();
-    mxcsr |= 1 << 15;
-    mxcsr |= 1 << 6;
-    _mm_setcsr(mxcsr);
-#else
-    unsigned int mxcsr;
-    __asm__ __volatile__("stmxcsr %0" : "=m"(mxcsr));
-    mxcsr |= 1 << 15;
-    mxcsr |= 1 << 6;
-    __asm__ __volatile__("ldmxcsr %0" : : "m"(mxcsr));
-#endif
-
 #if NK_TARGET_SAPPHIREAMX
     if (capabilities & nk_cap_sapphireamx_k) {
 #if defined(NK_DEFINED_LINUX_)
@@ -405,19 +409,23 @@ NK_PUBLIC int nk_configure_thread_x86_(nk_capability_t capabilities) {
     return 1;
 }
 
-NK_PUBLIC nk_capability_t nk_capabilities_x86_(void) {
+NK_PUBLIC nk_capability_t nk_capabilities_x8664_(void) {
     union four_registers_t {
         int array[4];
         struct separate_t {
             unsigned eax, ebx, ecx, edx;
         } named;
-    } info1, info7, info7sub1;
+    } info0, info1, info7, info7sub1;
 
 #if defined(_MSC_VER)
+    __cpuidex(info0.array, 0, 0);
     __cpuidex(info1.array, 1, 0);
     __cpuidex(info7.array, 7, 0);
     __cpuidex(info7sub1.array, 7, 1);
 #else
+    __asm__ __volatile__("cpuid"
+                         : "=a"(info0.named.eax), "=b"(info0.named.ebx), "=c"(info0.named.ecx), "=d"(info0.named.edx)
+                         : "a"(0), "c"(0));
     __asm__ __volatile__("cpuid"
                          : "=a"(info1.named.eax), "=b"(info1.named.ebx), "=c"(info1.named.ecx), "=d"(info1.named.edx)
                          : "a"(1), "c"(0));
@@ -430,6 +438,7 @@ NK_PUBLIC nk_capability_t nk_capabilities_x86_(void) {
                          : "a"(7), "c"(1));
 #endif
 
+    unsigned max_leaf = info0.named.eax;
     unsigned supports_avx2 = (info7.named.ebx & 0x00000020) != 0;
     unsigned supports_f16c = (info1.named.ecx & 0x20000000) != 0;
     unsigned supports_fma = (info1.named.ecx & 0x00001000) != 0;
@@ -450,12 +459,29 @@ NK_PUBLIC nk_capability_t nk_capabilities_x86_(void) {
     unsigned supports_avxvnni = (info7sub1.named.eax & 0x00000010) != 0;
     unsigned supports_avxvnniint8 = (info7sub1.named.edx & 0x00000010) != 0;
 
+    // AVX10.2 detection via CPUID leaf 0x24, subleaf 0.
+    // EBX[7:0] contains the AVX10 convergent vector ISA version number.
+    unsigned supports_avx10v2 = 0;
+    if (max_leaf >= 0x24) {
+        union four_registers_t info24;
+#if defined(_MSC_VER)
+        __cpuidex(info24.array, 0x24, 0);
+#else
+        __asm__ __volatile__("cpuid"
+                             : "=a"(info24.named.eax), "=b"(info24.named.ebx), "=c"(info24.named.ecx),
+                               "=d"(info24.named.edx)
+                             : "a"(0x24), "c"(0));
+#endif
+        supports_avx10v2 = (info24.named.ebx & 0xFF) >= 2;
+    }
+
     unsigned supports_haswell = supports_avx2 && supports_f16c && supports_fma;
     unsigned supports_skylake = supports_avx512f;
     unsigned supports_icelake = supports_avx512vnni && supports_avx512ifma && supports_avx512bitalg &&
                                 supports_avx512vbmi && supports_avx512vbmi2 && supports_avx512vpopcntdq;
     unsigned supports_genoa = supports_avx512bf16;
     unsigned supports_sapphire = supports_avx512fp16;
+    unsigned supports_diamond = supports_avx10v2 && supports_sapphire;
     unsigned supports_turin = supports_avx512vp2intersect && supports_avx512bf16;
     unsigned supports_sierra = supports_haswell && supports_avxvnniint8;
     unsigned supports_alder = supports_haswell && supports_avxvnni;
@@ -464,50 +490,80 @@ NK_PUBLIC nk_capability_t nk_capabilities_x86_(void) {
 
     return (nk_capability_t)((nk_cap_haswell_k * supports_haswell) | (nk_cap_skylake_k * supports_skylake) |
                              (nk_cap_icelake_k * supports_icelake) | (nk_cap_genoa_k * supports_genoa) |
-                             (nk_cap_sapphire_k * supports_sapphire) | (nk_cap_turin_k * supports_turin) |
-                             (nk_cap_sierra_k * supports_sierra) | (nk_cap_alder_k * supports_alder) |
-                             (nk_cap_sapphireamx_k * supports_sapphireamx) |
+                             (nk_cap_diamond_k * supports_diamond) | (nk_cap_sapphire_k * supports_sapphire) |
+                             (nk_cap_turin_k * supports_turin) | (nk_cap_sierra_k * supports_sierra) |
+                             (nk_cap_alder_k * supports_alder) | (nk_cap_sapphireamx_k * supports_sapphireamx) |
                              (nk_cap_graniteamx_k * supports_graniteamx) | (nk_cap_serial_k));
 }
 
-#endif // NK_TARGET_X86_
+#endif // NK_TARGET_X8664_
 
-#if NK_TARGET_ARM_
-
-#if defined(__clang__)
-#pragma clang attribute push(__attribute__((target("arch=armv8.5-a+sve"))), apply_to = function)
-#elif defined(__GNUC__)
-#pragma GCC push_options
-#pragma GCC target("arch=armv8.5-a+sve")
-#endif
+#if NK_TARGET_ARM64_
 
 #if NK_HAS_POSIX_EXTENSIONS_
-static sigjmp_buf nk_mrs_test_jump_buffer_;
-static void nk_mrs_test_sigill_handler_(int sig) {
+static sigjmp_buf nk_mrs_arm64_jump_buffer_;
+static void nk_mrs_arm64_sigill_handler_(int sig) {
     nk_unused_(sig);
-    siglongjmp(nk_mrs_test_jump_buffer_, 1);
+    siglongjmp(nk_mrs_arm64_jump_buffer_, 1);
 }
 #endif
 
-NK_PUBLIC int nk_configure_thread_arm_(nk_capability_t capabilities) {
+NK_PUBLIC int nk_configure_thread_arm64_(nk_capability_t capabilities) {
+#if defined(_MSC_VER)
     nk_unused_(capabilities);
-#if defined(NK_DEFINED_APPLE_)
-    int is_success = fesetenv(FE_DFL_DISABLE_DENORMS_ENV) == 0;
-    return is_success;
-#elif defined(NK_DEFINED_LINUX_) || defined(NK_DEFINED_FREEBSD_)
-    uint64_t fpcr;
-    __asm__ volatile("mrs %0, fpcr" : "=r"(fpcr));
-    fpcr |= (1 << 19);
-    fpcr |= (1 << 24);
-    fpcr |= (1 << 25);
-    __asm__ volatile("msr fpcr, %0" : : "r"(fpcr));
     return 1;
 #else
-    return 0;
+    // FPCR.EBF (bit 13) — requires FEAT_EBF16:
+    //   Enables fused BF16 dot-product semantics for BFDOT/BFMOPA/BFMMLA.
+    //   Without it, each bf16×bf16 product is individually rounded (Round-to-Odd) before
+    //   summation (3-way rounding). With EBF=1, intermediates are summed before rounding,
+    //   matching x86 VDPBF16PS (Genoa/Sapphire Rapids) precision.
+    //
+    // FPCR.AH (bit 1) — requires FEAT_AFP — is intentionally NOT set:
+    //   It enables alternate floating-point behavior (FEAT_RPRES: 12-bit FRECPE/FRSQRTE),
+    //   but also changes sign-bit handling in ways that break CPython's `decimal` module
+    //   (`Decimal.from_float()` drops the sign of negative values). The FEAT_RPRES benefit
+    //   (saving one Newton-Raphson iteration) is not worth the process-wide side effects.
+    //
+    // EBF defaults to 0 on process creation (kernel zeroes FPCR). Setting it is
+    // ABI-legal per AAPCS64. Writing this bit on hardware without FEAT_EBF16
+    // is unsafe (it is RES0), so we gate on feature detection.
+    unsigned long fpcr_desired = 0;
+
+#if defined(NK_DEFINED_APPLE_)
+    nk_unused_(capabilities);
+    size_t sysctl_size = sizeof(unsigned);
+    unsigned has_ebf16 = 0;
+    if (sysctlbyname("hw.optional.arm.FEAT_EBF16", &has_ebf16, &sysctl_size, NULL, 0) != 0) has_ebf16 = 0;
+    if (has_ebf16) fpcr_desired |= (1UL << 13);
+
+#elif defined(NK_DEFINED_LINUX_) || defined(NK_DEFINED_FREEBSD_)
+    // Read ID registers via MRS. Only safe if MRS is known to work — indicated by
+    // capabilities beyond basic NEON (nk_capabilities_arm64_ validated MRS via sigaction probe).
+    if (capabilities & ~(nk_cap_neon_k | nk_cap_serial_k)) {
+        // FEAT_EBF16: ID_AA64ISAR1_EL1.BF16 bits [47:44] >= 0b0010
+        register unsigned long isar1_val __asm__("x0");
+        __asm__ __volatile__(".inst 0xD5380620" : "=r"(isar1_val)); // MRS x0, ID_AA64ISAR1_EL1
+        if (((isar1_val >> 44) & 0xF) >= 2) fpcr_desired |= (1UL << 13);
+    }
+    else { nk_unused_(capabilities); }
+#else
+    nk_unused_(capabilities);
 #endif
+
+    if (fpcr_desired) {
+        unsigned long fpcr_val;
+        __asm__ __volatile__("mrs %0, fpcr" : "=r"(fpcr_val));
+        if ((fpcr_val & fpcr_desired) != fpcr_desired) {
+            fpcr_val |= fpcr_desired;
+            __asm__ __volatile__("msr fpcr, %0" : : "r"(fpcr_val));
+        }
+    }
+    return 1;
+#endif // _MSC_VER
 }
 
-NK_PUBLIC nk_capability_t nk_capabilities_arm_(void) {
+NK_PUBLIC nk_capability_t nk_capabilities_arm64_(void) {
 #if defined(NK_DEFINED_APPLE_)
     size_t size = sizeof(unsigned);
     unsigned supports_neon = 0, supports_fp16 = 0, supports_fhm = 0, supports_bf16 = 0, supports_i8mm = 0;
@@ -539,15 +595,15 @@ NK_PUBLIC nk_capability_t nk_capabilities_arm_(void) {
 
 #if NK_HAS_POSIX_EXTENSIONS_
     struct sigaction action_new, action_old;
-    action_new.sa_handler = nk_mrs_test_sigill_handler_;
+    action_new.sa_handler = nk_mrs_arm64_sigill_handler_;
     sigemptyset(&action_new.sa_mask);
     action_new.sa_flags = 0;
 
     int mrs_works = 0;
     if (sigaction(SIGILL, &action_new, &action_old) == 0) {
-        if (sigsetjmp(nk_mrs_test_jump_buffer_, 1) == 0) {
-            unsigned long midr_value;
-            __asm__ __volatile__("mrs %0, MIDR_EL1" : "=r"(midr_value));
+        if (sigsetjmp(nk_mrs_arm64_jump_buffer_, 1) == 0) {
+            register unsigned long midr_value __asm__("x0");
+            __asm__ __volatile__(".inst 0xD5380000" : "=r"(midr_value)); // MRS x0, MIDR_EL1
             mrs_works = 1;
         }
         sigaction(SIGILL, &action_old, NULL);
@@ -558,28 +614,46 @@ NK_PUBLIC nk_capability_t nk_capabilities_arm_(void) {
     return (nk_capability_t)(nk_cap_neon_k | nk_cap_serial_k);
 #endif
 
-    unsigned long id_aa64isar0_el1 = 0, id_aa64isar1_el1 = 0, id_aa64pfr0_el1 = 0, id_aa64zfr0_el1 = 0;
+    unsigned long id_aa64isar0_el1 = 0, id_aa64isar1_el1 = 0, id_aa64pfr0_el1 = 0, id_aa64zfr0_el1 = 0,
+                  id_aa64fpfr0_el1 = 0;
 
-    __asm__ __volatile__("mrs %0, ID_AA64ISAR0_EL1" : "=r"(id_aa64isar0_el1));
+    register unsigned long __isar0 __asm__("x0");
+    __asm__ __volatile__(".inst 0xD5380600" : "=r"(__isar0)); // MRS x0, ID_AA64ISAR0_EL1
+    id_aa64isar0_el1 = __isar0;
     unsigned supports_integer_dot_products = ((id_aa64isar0_el1 >> 44) & 0xF) >= 1;
     unsigned supports_fhm = ((id_aa64isar0_el1 >> 48) & 0xF) >= 1;
-    __asm__ __volatile__("mrs %0, ID_AA64ISAR1_EL1" : "=r"(id_aa64isar1_el1));
+    register unsigned long __isar1 __asm__("x0");
+    __asm__ __volatile__(".inst 0xD5380620" : "=r"(__isar1)); // MRS x0, ID_AA64ISAR1_EL1
+    id_aa64isar1_el1 = __isar1;
     unsigned supports_i8mm = ((id_aa64isar1_el1 >> 52) & 0xF) >= 1;
     unsigned supports_bf16 = ((id_aa64isar1_el1 >> 44) & 0xF) >= 1;
 
-    __asm__ __volatile__("mrs %0, ID_AA64PFR0_EL1" : "=r"(id_aa64pfr0_el1));
+    register unsigned long __pfr0 __asm__("x0");
+    __asm__ __volatile__(".inst 0xD5380400" : "=r"(__pfr0)); // MRS x0, ID_AA64PFR0_EL1
+    id_aa64pfr0_el1 = __pfr0;
     unsigned supports_sve = ((id_aa64pfr0_el1 >> 32) & 0xF) >= 1;
     unsigned supports_fp16 = ((id_aa64pfr0_el1 >> 20) & 0xF) == 0x1;
     unsigned supports_neon = ((id_aa64pfr0_el1 >> 20) & 0xF) != 0xF;
 
-    if (supports_sve) __asm__ __volatile__("mrs %0, ID_AA64ZFR0_EL1" : "=r"(id_aa64zfr0_el1));
+    if (supports_sve) {
+        register unsigned long __zfr0 __asm__("x0");
+        __asm__ __volatile__(".inst 0xD5380480" : "=r"(__zfr0)); // MRS x0, ID_AA64ZFR0_EL1
+        id_aa64zfr0_el1 = __zfr0;
+    }
     unsigned supports_svesdotmm = ((id_aa64zfr0_el1 >> 44) & 0xF) >= 1;
     unsigned supports_svebfdot = ((id_aa64zfr0_el1 >> 20) & 0xF) >= 1;
     unsigned supports_sve2 = ((id_aa64zfr0_el1) & 0xF) >= 1;
     unsigned supports_sve2p1 = ((id_aa64zfr0_el1) & 0xF) >= 2;
 
+    register unsigned long __fpfr0 __asm__("x0");
+    __asm__ __volatile__(".inst 0xD53804E0" : "=r"(__fpfr0)); // MRS x0, ID_AA64FPFR0_EL1
+    id_aa64fpfr0_el1 = __fpfr0;
+    unsigned supports_fp8dot4 = ((id_aa64fpfr0_el1 >> 29) & 0x1) >= 1;
+
     unsigned long id_aa64pfr1_el1 = 0, id_aa64smfr0_el1 = 0;
-    __asm__ __volatile__("mrs %0, ID_AA64PFR1_EL1" : "=r"(id_aa64pfr1_el1));
+    register unsigned long __pfr1 __asm__("x0");
+    __asm__ __volatile__(".inst 0xD5380420" : "=r"(__pfr1)); // MRS x0, ID_AA64PFR1_EL1
+    id_aa64pfr1_el1 = __pfr1;
     unsigned supports_sme = ((id_aa64pfr1_el1 >> 24) & 0xF) >= 1;
 
     unsigned supports_sme2 = 0, supports_sme2p1 = 0;
@@ -607,6 +681,7 @@ NK_PUBLIC nk_capability_t nk_capabilities_arm_(void) {
                          (nk_cap_neonfhm_k * (supports_neon && supports_fhm)) |
                          (nk_cap_neonbfdot_k * (supports_neon && supports_bf16)) |
                          (nk_cap_neonsdot_k * (supports_neon && supports_i8mm && supports_integer_dot_products)) |
+                         (nk_cap_neonfp8_k * (supports_neon && supports_fp8dot4)) | //
                          (nk_cap_sve_k * (supports_sve)) | (nk_cap_svehalf_k * (supports_sve && supports_fp16)) |
                          (nk_cap_svebfdot_k * (supports_sve && supports_svebfdot)) |
                          (nk_cap_svesdot_k * (supports_sve && supports_svesdotmm)) | (nk_cap_sve2_k * (supports_sve2)) |
@@ -634,17 +709,11 @@ NK_PUBLIC nk_capability_t nk_capabilities_arm_(void) {
 #endif
 }
 
-#if defined(__clang__)
-#pragma clang attribute pop
-#elif defined(__GNUC__)
-#pragma GCC pop_options
-#endif
+#endif // NK_TARGET_ARM64_
 
-#endif // NK_TARGET_ARM_
+#if NK_TARGET_RISCV64_
 
-#if NK_TARGET_RISCV_
-
-NK_PUBLIC nk_capability_t nk_capabilities_riscv_(void) {
+NK_PUBLIC nk_capability_t nk_capabilities_riscv64_(void) {
 #if defined(NK_DEFINED_LINUX_)
     unsigned long hwcap = getauxval(AT_HWCAP);
     nk_capability_t caps = nk_cap_serial_k;
@@ -676,7 +745,41 @@ NK_PUBLIC nk_capability_t nk_capabilities_riscv_(void) {
 #endif
 }
 
-#endif // NK_TARGET_RISCV_
+#endif // NK_TARGET_RISCV64_
+
+#if NK_TARGET_LOONGARCH64_
+
+NK_PUBLIC nk_capability_t nk_capabilities_loongarch64_(void) {
+#if defined(NK_DEFINED_LINUX_)
+    unsigned long hwcap = getauxval(AT_HWCAP);
+    nk_capability_t caps = nk_cap_serial_k;
+    // LoongArch HWCAP bit 5 = LASX (256-bit SIMD)
+    if (hwcap & (1UL << 5)) caps |= nk_cap_loongsonasx_k;
+    return caps;
+#else
+    return nk_cap_serial_k;
+#endif
+}
+
+#endif // NK_TARGET_LOONGARCH64_
+
+#if NK_TARGET_POWER64_
+
+NK_PUBLIC nk_capability_t nk_capabilities_power64_(void) {
+#if defined(NK_DEFINED_LINUX_)
+    unsigned long hwcap = getauxval(AT_HWCAP);
+    unsigned long hwcap2 = getauxval(AT_HWCAP2);
+    nk_capability_t caps = nk_cap_serial_k;
+    nk_unused_(hwcap2);
+    // PPC_FEATURE_HAS_VSX = 0x00000080
+    if (hwcap & 0x00000080) caps |= nk_cap_powervsx_k;
+    return caps;
+#else
+    return nk_cap_serial_k;
+#endif
+}
+
+#endif // NK_TARGET_POWER64_
 
 #if NK_TARGET_WASM_
 
@@ -710,35 +813,99 @@ NK_PUBLIC nk_capability_t nk_capabilities_v128relaxed_(void) {
 #endif // NK_TARGET_WASM_
 
 NK_PUBLIC int nk_configure_thread_(nk_capability_t capabilities) {
-#if NK_TARGET_X86_
+#if NK_TARGET_X8664_
     return nk_configure_thread_x86_(capabilities);
 #endif
-#if NK_TARGET_ARM_
-    return nk_configure_thread_arm_(capabilities);
+#if NK_TARGET_ARM64_
+    return nk_configure_thread_arm64_(capabilities);
 #endif
     nk_unused_(capabilities);
     return 1; // success — no platform-specific thread configuration needed
 }
 
 NK_PUBLIC nk_capability_t nk_capabilities_(void) {
-#if NK_TARGET_X86_
-    return nk_capabilities_x86_();
+#if NK_TARGET_X8664_
+    return nk_capabilities_x8664_();
+#elif NK_TARGET_ARM64_
+    return nk_capabilities_arm64_();
+#elif NK_TARGET_RISCV64_
+    return nk_capabilities_riscv64_();
+#elif NK_TARGET_LOONGARCH64_
+    return nk_capabilities_loongarch64_();
+#elif NK_TARGET_POWER64_
+    return nk_capabilities_power64_();
+#elif NK_TARGET_WASM_
+    return nk_capabilities_v128relaxed_();
+#else
+    return nk_cap_serial_k;
 #endif
-#if NK_TARGET_ARM_
-    return nk_capabilities_arm_();
+}
+
+/**
+ *  @brief  Returns a bitmask of all capabilities the library was compiled with,
+ *          regardless of whether the current CPU supports them at runtime.
+ */
+NK_PUBLIC nk_capability_t nk_capabilities_compiled_(void) {
+    nk_capability_t caps = nk_cap_serial_k;
+#if NK_TARGET_X8664_
+    caps |= nk_cap_haswell_k * NK_TARGET_HASWELL;
+    caps |= nk_cap_skylake_k * NK_TARGET_SKYLAKE;
+    caps |= nk_cap_icelake_k * NK_TARGET_ICELAKE;
+    caps |= nk_cap_genoa_k * NK_TARGET_GENOA;
+    caps |= nk_cap_sapphire_k * NK_TARGET_SAPPHIRE;
+    caps |= nk_cap_sapphireamx_k * NK_TARGET_SAPPHIREAMX;
+    caps |= nk_cap_graniteamx_k * NK_TARGET_GRANITEAMX;
+    caps |= nk_cap_diamond_k * NK_TARGET_DIAMOND;
+    caps |= nk_cap_turin_k * NK_TARGET_TURIN;
+    caps |= nk_cap_alder_k * NK_TARGET_ALDER;
+    caps |= nk_cap_sierra_k * NK_TARGET_SIERRA;
 #endif
-#if NK_TARGET_RISCV_
-    return nk_capabilities_riscv_();
+#if NK_TARGET_ARM64_
+    caps |= nk_cap_neon_k * NK_TARGET_NEON;
+    caps |= nk_cap_neonhalf_k * NK_TARGET_NEONHALF;
+    caps |= nk_cap_neonsdot_k * NK_TARGET_NEONSDOT;
+    caps |= nk_cap_neonbfdot_k * NK_TARGET_NEONBFDOT;
+    caps |= nk_cap_neonfhm_k * NK_TARGET_NEONFHM;
+    caps |= nk_cap_neonfp8_k * NK_TARGET_NEONFP8;
+    caps |= nk_cap_sve_k * NK_TARGET_SVE;
+    caps |= nk_cap_svehalf_k * NK_TARGET_SVEHALF;
+    caps |= nk_cap_svesdot_k * NK_TARGET_SVESDOT;
+    caps |= nk_cap_svebfdot_k * NK_TARGET_SVEBFDOT;
+    caps |= nk_cap_sve2_k * NK_TARGET_SVE2;
+    caps |= nk_cap_sve2p1_k * NK_TARGET_SVE2P1;
+    caps |= nk_cap_sme_k * NK_TARGET_SME;
+    caps |= nk_cap_sme2_k * NK_TARGET_SME2;
+    caps |= nk_cap_sme2p1_k * NK_TARGET_SME2P1;
+    caps |= nk_cap_smef64_k * NK_TARGET_SMEF64;
+    caps |= nk_cap_smehalf_k * NK_TARGET_SMEHALF;
+    caps |= nk_cap_smebf16_k * NK_TARGET_SMEBF16;
+    caps |= nk_cap_smebi32_k * NK_TARGET_SMEBI32;
+    caps |= nk_cap_smelut2_k * NK_TARGET_SMELUT2;
+    caps |= nk_cap_smefa64_k * NK_TARGET_SMEFA64;
+#endif
+#if NK_TARGET_RISCV64_
+    caps |= nk_cap_rvv_k * NK_TARGET_RVV;
+    caps |= nk_cap_rvvhalf_k * NK_TARGET_RVVHALF;
+    caps |= nk_cap_rvvbf16_k * NK_TARGET_RVVBF16;
+    caps |= nk_cap_rvvbb_k * NK_TARGET_RVVBB;
+#endif
+#if NK_TARGET_LOONGARCH64_
+    caps |= nk_cap_loongsonasx_k * NK_TARGET_LOONGSONASX;
+#endif
+#if NK_TARGET_POWER64_
+    caps |= nk_cap_powervsx_k * NK_TARGET_POWERVSX;
 #endif
 #if NK_TARGET_WASM_
-    return nk_capabilities_v128relaxed_();
+    caps |= nk_cap_v128relaxed_k * NK_TARGET_V128RELAXED;
 #endif
-    return nk_cap_serial_k;
+    return caps;
 }
 
 #if NK_DYNAMIC_DISPATCH
 
 NK_DYNAMIC nk_capability_t nk_capabilities(void);
+NK_DYNAMIC nk_capability_t nk_capabilities_available(void);
+NK_DYNAMIC nk_capability_t nk_capabilities_compiled(void);
 NK_DYNAMIC int nk_configure_thread(nk_capability_t);
 NK_DYNAMIC int nk_uses_dynamic_dispatch(void);
 NK_DYNAMIC void nk_dispatch_table_update(nk_capability_t);
@@ -750,6 +917,8 @@ NK_DYNAMIC void nk_find_kernel_punned(nk_kernel_kind_t kind, nk_dtype_t dtype, n
 NK_PUBLIC int nk_uses_dynamic_dispatch(void) { return 0; }
 NK_PUBLIC int nk_configure_thread(nk_capability_t c) { return nk_configure_thread_(c); }
 NK_PUBLIC nk_capability_t nk_capabilities(void) { return nk_capabilities_(); }
+NK_PUBLIC nk_capability_t nk_capabilities_available(void) { return nk_capabilities_() & nk_capabilities_compiled_(); }
+NK_PUBLIC nk_capability_t nk_capabilities_compiled(void) { return nk_capabilities_compiled_(); }
 NK_PUBLIC void nk_dispatch_table_update(nk_capability_t caps) { nk_unused_(caps); }
 
 #endif

@@ -126,19 +126,22 @@ void test_mesh() {
     check("kabsch_f32_neon", test_kabsch<f32_t>, nk_kabsch_f32_neon);
     check("umeyama_f64_neon", test_umeyama<f64_t>, nk_umeyama_f64_neon);
     check("umeyama_f32_neon", test_umeyama<f32_t>, nk_umeyama_f32_neon);
+    check("rmsd_f16_neon", test_rmsd<f16_t>, nk_rmsd_f16_neon);
+    check("kabsch_f16_neon", test_kabsch<f16_t>, nk_kabsch_f16_neon);
+    check("umeyama_f16_neon", test_umeyama<f16_t>, nk_umeyama_f16_neon);
 #endif // NK_TARGET_NEON
-
-#if NK_TARGET_NEONHALF
-    check("rmsd_f16_neonhalf", test_rmsd<f16_t>, nk_rmsd_f16_neonhalf);
-    check("kabsch_f16_neonhalf", test_kabsch<f16_t>, nk_kabsch_f16_neonhalf);
-    check("umeyama_f16_neonhalf", test_umeyama<f16_t>, nk_umeyama_f16_neonhalf);
-#endif // NK_TARGET_NEONHALF
 
 #if NK_TARGET_NEONBFDOT
     check("rmsd_bf16_neonbfdot", test_rmsd<bf16_t>, nk_rmsd_bf16_neonbfdot);
     check("kabsch_bf16_neonbfdot", test_kabsch<bf16_t>, nk_kabsch_bf16_neonbfdot);
     check("umeyama_bf16_neonbfdot", test_umeyama<bf16_t>, nk_umeyama_bf16_neonbfdot);
 #endif // NK_TARGET_NEONBFDOT
+
+#if NK_TARGET_NEONFHM
+    check("rmsd_f16_neonfhm", test_rmsd<f16_t>, nk_rmsd_f16_neonfhm);
+    check("kabsch_f16_neonfhm", test_kabsch<f16_t>, nk_kabsch_f16_neonfhm);
+    check("umeyama_f16_neonfhm", test_umeyama<f16_t>, nk_umeyama_f16_neonfhm);
+#endif // NK_TARGET_NEONFHM
 
 #if NK_TARGET_HASWELL
     check("rmsd_f64_haswell", test_rmsd<f64_t>, nk_rmsd_f64_haswell);
@@ -169,6 +172,12 @@ void test_mesh() {
     check("umeyama_f16_skylake", test_umeyama<f16_t>, nk_umeyama_f16_skylake);
     check("umeyama_bf16_skylake", test_umeyama<bf16_t>, nk_umeyama_bf16_skylake);
 #endif // NK_TARGET_SKYLAKE
+
+#if NK_TARGET_GENOA
+    check("rmsd_bf16_genoa", test_rmsd<bf16_t>, nk_rmsd_bf16_genoa);
+    check("kabsch_bf16_genoa", test_kabsch<bf16_t>, nk_kabsch_bf16_genoa);
+    check("umeyama_bf16_genoa", test_umeyama<bf16_t>, nk_umeyama_bf16_genoa);
+#endif // NK_TARGET_GENOA
 
 #if NK_TARGET_RVV
     check("rmsd_f64_rvv", test_rmsd<f64_t>, nk_rmsd_f64_rvv);

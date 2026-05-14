@@ -22,7 +22,7 @@
 #ifndef NK_MAXSIM_ICELAKE_H
 #define NK_MAXSIM_ICELAKE_H
 
-#if NK_TARGET_X86_
+#if NK_TARGET_X8664_
 #if NK_TARGET_ICELAKE
 
 #include "numkong/types.h"
@@ -44,14 +44,14 @@ extern "C" {
 #pragma GCC target("avx2", "avx512f", "avx512vl", "avx512bw", "avx512dq", "avx512vnni", "f16c", "fma", "bmi", "bmi2")
 #endif
 
-#pragma region Single Precision Floats
+#pragma region F32 Floats
 
 NK_PUBLIC nk_size_t nk_maxsim_packed_size_f32_icelake(nk_size_t vector_count, nk_size_t depth) {
     return nk_maxsim_packed_size_(vector_count, depth, sizeof(nk_f32_t), 64);
 }
 
 NK_PUBLIC void nk_maxsim_pack_f32_icelake( //
-    nk_f32_t const *vectors, nk_size_t vector_count, nk_size_t depth, nk_size_t stride, void *packed) {
+    nk_f32_t const *vectors, nk_size_t vector_count, nk_size_t depth, nk_size_t stride_in_bytes, void *packed) {
 
     nk_size_t const element_bytes = sizeof(nk_f32_t);
     nk_size_t depth_i8_padded = nk_maxsim_packed_header_setup_(packed, vector_count, depth, 64, element_bytes);
@@ -63,7 +63,7 @@ NK_PUBLIC void nk_maxsim_pack_f32_icelake( //
     nk_size_t const original_stride = header->original_stride_bytes;
 
     for (nk_size_t vector_index = 0; vector_index < vector_count; vector_index++) {
-        char const *source_row = (char const *)vectors + vector_index * stride;
+        char const *source_row = (char const *)vectors + vector_index * stride_in_bytes;
         nk_f32_t norm_sq;
         nk_maxsim_quantize_vector_(source_row, element_bytes, depth, depth_i8_padded, 127.0f, nk_f32_to_f32_,
                                    &quantized_i8[vector_index * depth_i8_padded], &metadata[vector_index], &norm_sq);
@@ -75,16 +75,16 @@ NK_PUBLIC void nk_maxsim_pack_f32_icelake( //
     }
 }
 
-#pragma endregion
+#pragma endregion F32 Floats
 
-#pragma region Half Precision Floats
+#pragma region F16 Floats
 
 NK_PUBLIC nk_size_t nk_maxsim_packed_size_f16_icelake(nk_size_t vector_count, nk_size_t depth) {
     return nk_maxsim_packed_size_(vector_count, depth, sizeof(nk_f16_t), 64);
 }
 
 NK_PUBLIC void nk_maxsim_pack_f16_icelake( //
-    nk_f16_t const *vectors, nk_size_t vector_count, nk_size_t depth, nk_size_t stride, void *packed) {
+    nk_f16_t const *vectors, nk_size_t vector_count, nk_size_t depth, nk_size_t stride_in_bytes, void *packed) {
 
     nk_size_t const element_bytes = sizeof(nk_f16_t);
     nk_size_t depth_i8_padded = nk_maxsim_packed_header_setup_(packed, vector_count, depth, 64, element_bytes);
@@ -96,7 +96,7 @@ NK_PUBLIC void nk_maxsim_pack_f16_icelake( //
     nk_size_t const original_stride = header->original_stride_bytes;
 
     for (nk_size_t vector_index = 0; vector_index < vector_count; vector_index++) {
-        char const *source_row = (char const *)vectors + vector_index * stride;
+        char const *source_row = (char const *)vectors + vector_index * stride_in_bytes;
         nk_f32_t norm_sq;
         nk_maxsim_quantize_vector_(source_row, element_bytes, depth, depth_i8_padded, 127.0f,
                                    (nk_maxsim_to_f32_t)nk_f16_to_f32_haswell,
@@ -109,7 +109,7 @@ NK_PUBLIC void nk_maxsim_pack_f16_icelake( //
     }
 }
 
-#pragma endregion
+#pragma endregion F16 Floats
 
 #pragma region Coarse Argmax
 
@@ -390,7 +390,7 @@ NK_INTERNAL void nk_maxsim_coarse_argmax_icelake_(        //
     }
 }
 
-#pragma endregion
+#pragma endregion Coarse Argmax
 
 #pragma region Compute Functions
 
@@ -463,7 +463,7 @@ NK_PUBLIC void nk_maxsim_packed_f16_icelake( //
     *result = (nk_f32_t)total_angular_distance;
 }
 
-#pragma endregion
+#pragma endregion Compute Functions
 
 #if defined(__clang__)
 #pragma clang attribute pop
@@ -476,5 +476,5 @@ NK_PUBLIC void nk_maxsim_packed_f16_icelake( //
 #endif
 
 #endif // NK_TARGET_ICELAKE
-#endif // NK_TARGET_X86_
+#endif // NK_TARGET_X8664_
 #endif // NK_MAXSIM_ICELAKE_H

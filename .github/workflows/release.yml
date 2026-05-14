@@ -27,8 +27,21 @@ jobs:
           version-file: "VERSION"
           update-version-in: |
             Cargo.toml:^version = "(\d+\.\d+\.\d+)"
-            package.json:"version": "(\d+\.\d+\.\d+)"
+            package.json:"(\d+\.\d+\.\d+)"
+            javascript/@numkong-linux-x64/package.json:"version": "(\d+\.\d+\.\d+)"
+            javascript/@numkong-linux-arm64/package.json:"version": "(\d+\.\d+\.\d+)"
+            javascript/@numkong-darwin-x64/package.json:"version": "(\d+\.\d+\.\d+)"
+            javascript/@numkong-darwin-arm64/package.json:"version": "(\d+\.\d+\.\d+)"
+            javascript/@numkong-win32-x64/package.json:"version": "(\d+\.\d+\.\d+)"
+            javascript/@numkong-win32-arm64/package.json:"version": "(\d+\.\d+\.\d+)"
             CMakeLists.txt:VERSION (\d+\.\d+\.\d+)
+            CITATION.cff:^version: (\d+\.\d+\.\d+)
+            package.json:@numkong/darwin-arm64": "(\d+\.\d+\.\d+)"
+            package.json:@numkong/darwin-x64": "(\d+\.\d+\.\d+)"
+            package.json:@numkong/linux-arm64": "(\d+\.\d+\.\d+)"
+            package.json:@numkong/linux-x64": "(\d+\.\d+\.\d+)"
+            package.json:@numkong/win32-arm64": "(\d+\.\d+\.\d+)"
+            package.json:@numkong/win32-x64": "(\d+\.\d+\.\d+)"
           update-major-version-in: |
             include/numkong/capabilities.h:^#define NK_VERSION_MAJOR (\d+)
           update-minor-version-in: |
@@ -45,18 +58,18 @@ jobs:
     needs: versioning
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout the latest code
+      - name: Checkout
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - name: Perform rebase
+      - name: Perform Rebase
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin main
           git checkout main-dev
           git rebase origin/main
-      - name: Push changes
+      - name: Push Changes
         uses: CasperWA/push-protected@v2
         with:
           token: ${{ secrets.SEMANTIC_REBASE_TOKEN }}

@@ -13,13 +13,42 @@
 extern "C" {
 #endif
 
-#pragma region - Type Punned Loads and Stores
+/*  Keep the serial conversions below actually scalar, regardless of build type.
+ *  Without this, -O3 + LTO can vectorize or clone the serial kernels under AVX-512
+ *  callers in dispatch_*.c, which wastes binary and breaks the nk_*_serial-as-scalar-oracle
+ *  contract. See dots/serial.h. */
+#if defined(__clang__)
+#pragma clang attribute push(__attribute__((noinline)), apply_to = function)
+#elif defined(__GNUC__)
+#pragma GCC push_options
+#pragma GCC optimize("no-tree-vectorize", "no-tree-slp-vectorize", "no-ipa-cp-clone", "no-inline")
+#endif
+
+#pragma region Type Punned Loads and Stores
 
 /** @brief Type-agnostic 32-bit full load (scalar). */
 NK_INTERNAL void nk_load_b32_serial_(void const *src, nk_b32_vec_t *dst) { dst->u32 = *(nk_u32_t const *)src; }
 
+/** @brief Type-agnostic 64-bit full load. */
+NK_INTERNAL void nk_load_b64_serial_(void const *src, nk_b64_vec_t *dst) { dst->u64 = *(nk_u64_t const *)src; }
+
+/** @brief Type-agnostic 128-bit full load. */
+NK_INTERNAL void nk_load_b128_serial_(void const *src, nk_b128_vec_t *dst) {
+    nk_u64_t const *s = (nk_u64_t const *)src;
+    dst->u64s[0] = s[0], dst->u64s[1] = s[1];
+}
+
+/** @brief Type-agnostic 256-bit full load. */
+NK_INTERNAL void nk_load_b256_serial_(void const *src, nk_b256_vec_t *dst) {
+    nk_u64_t const *s = (nk_u64_t const *)src;
+    dst->u64s[0] = s[0], dst->u64s[1] = s[1], dst->u64s[2] = s[2], dst->u64s[3] = s[3];
+}
+
 /** @brief Type-agnostic 32-bit full store (scalar). */
 NK_INTERNAL void nk_store_b32_serial_(nk_b32_vec_t const *src, void *dst) { *(nk_u32_t *)dst = src->u32; }
+
+/** @brief Type-agnostic 64-bit full store (scalar). */
+NK_INTERNAL void nk_store_b64_serial_(nk_b64_vec_t const *src, void *dst) { *(nk_u64_t *)dst = src->u64; }
 
 /** @brief Type-agnostic 128-bit store (serial, word-by-word). */
 NK_INTERNAL void nk_store_b128_serial_(nk_b128_vec_t const *src, void *dst) {
@@ -37,7 +66,502 @@ NK_INTERNAL void nk_store_b256_serial_(nk_b256_vec_t const *src, void *dst) {
     d[3] = src->u64s[3];
 }
 
-#pragma endregion - Type Punned Loads and Stores
+/** @brief Type-agnostic partial load for 64-bit elements (4 elements max) into 256-bit vector. */
+NK_INTERNAL void nk_partial_load_b64x4_serial_(void const *src, nk_b256_vec_t *dst, nk_size_t n) {
+    nk_u64_t const *s = (nk_u64_t const *)src;
+    dst->u64s[0] = 0, dst->u64s[1] = 0, dst->u64s[2] = 0, dst->u64s[3] = 0;
+    switch (n) {
+    default:
+    case 4: dst->u64s[3] = s[3]; // fallthrough
+    case 3: dst->u64s[2] = s[2]; // fallthrough
+    case 2: dst->u64s[1] = s[1]; // fallthrough
+    case 1: dst->u64s[0] = s[0]; // fallthrough
+    case 0: break;
+    }
+}
+
+/** @brief Type-agnostic partial store for 64-bit elements (4 elements max) from 256-bit vector. */
+NK_INTERNAL void nk_partial_store_b64x4_serial_(nk_b256_vec_t const *src, void *dst, nk_size_t n) {
+    nk_u64_t *d = (nk_u64_t *)dst;
+    switch (n) {
+    default:
+    case 4: d[3] = src->u64s[3]; // fallthrough
+    case 3: d[2] = src->u64s[2]; // fallthrough
+    case 2: d[1] = src->u64s[1]; // fallthrough
+    case 1: d[0] = src->u64s[0]; // fallthrough
+    case 0: break;
+    }
+}
+
+NK_INTERNAL void nk_partial_load_b64x2_serial_(void const *src, nk_b128_vec_t *dst, nk_size_t n) {
+    dst->u64s[0] = 0, dst->u64s[1] = 0;
+    nk_u64_t const *s = (nk_u64_t const *)src;
+    switch (n) {
+    default:
+    case 2: dst->u64s[1] = s[1]; // fallthrough
+    case 1: dst->u64s[0] = s[0]; // fallthrough
+    case 0: break;
+    }
+}
+
+/** @brief Type-agnostic partial store for 64-bit elements (2 elements max) from 128-bit vector. */
+NK_INTERNAL void nk_partial_store_b64x2_serial_(nk_b128_vec_t const *src, void *dst, nk_size_t n) {
+    nk_u64_t *d = (nk_u64_t *)dst;
+    switch (n) {
+    default:
+    case 2: d[1] = src->u64s[1]; // fallthrough
+    case 1: d[0] = src->u64s[0]; // fallthrough
+    case 0: break;
+    }
+}
+
+/** @brief Type-agnostic partial load for 32-bit elements (8 elements max) into 256-bit vector. */
+NK_INTERNAL void nk_partial_load_b32x8_serial_(void const *src, nk_b256_vec_t *dst, nk_size_t n) {
+    dst->u64s[0] = 0, dst->u64s[1] = 0, dst->u64s[2] = 0, dst->u64s[3] = 0;
+    nk_u32_t const *s = (nk_u32_t const *)src;
+    switch (n) {
+    default:
+    case 8: dst->u32s[7] = s[7]; // fallthrough
+    case 7: dst->u32s[6] = s[6]; // fallthrough
+    case 6: dst->u32s[5] = s[5]; // fallthrough
+    case 5: dst->u32s[4] = s[4]; // fallthrough
+    case 4: dst->u32s[3] = s[3]; // fallthrough
+    case 3: dst->u32s[2] = s[2]; // fallthrough
+    case 2: dst->u32s[1] = s[1]; // fallthrough
+    case 1: dst->u32s[0] = s[0]; // fallthrough
+    case 0: break;
+    }
+}
+
+/** @brief Type-agnostic partial store for 32-bit elements (8 elements max) from 256-bit vector. */
+NK_INTERNAL void nk_partial_store_b32x8_serial_(nk_b256_vec_t const *src, void *dst, nk_size_t n) {
+    nk_u32_t *d = (nk_u32_t *)dst;
+    switch (n) {
+    default:
+    case 8: d[7] = src->u32s[7]; // fallthrough
+    case 7: d[6] = src->u32s[6]; // fallthrough
+    case 6: d[5] = src->u32s[5]; // fallthrough
+    case 5: d[4] = src->u32s[4]; // fallthrough
+    case 4: d[3] = src->u32s[3]; // fallthrough
+    case 3: d[2] = src->u32s[2]; // fallthrough
+    case 2: d[1] = src->u32s[1]; // fallthrough
+    case 1: d[0] = src->u32s[0]; // fallthrough
+    case 0: break;
+    }
+}
+
+/** @brief Type-agnostic partial load for 32-bit elements (4 elements max) into 128-bit vector. */
+NK_INTERNAL void nk_partial_load_b32x4_serial_(void const *src, nk_b128_vec_t *dst, nk_size_t n) {
+    dst->u64s[0] = 0, dst->u64s[1] = 0;
+    nk_u32_t const *s = (nk_u32_t const *)src;
+    switch (n) {
+    default:
+    case 4: dst->u32s[3] = s[3]; // fallthrough
+    case 3: dst->u32s[2] = s[2]; // fallthrough
+    case 2: dst->u32s[1] = s[1]; // fallthrough
+    case 1: dst->u32s[0] = s[0]; // fallthrough
+    case 0: break;
+    }
+}
+
+/** @brief Type-agnostic partial store for 32-bit elements (4 elements max) from 128-bit vector. */
+NK_INTERNAL void nk_partial_store_b32x4_serial_(nk_b128_vec_t const *src, void *dst, nk_size_t n) {
+    nk_u32_t *d = (nk_u32_t *)dst;
+    switch (n) {
+    default:
+    case 4: d[3] = src->u32s[3]; // fallthrough
+    case 3: d[2] = src->u32s[2]; // fallthrough
+    case 2: d[1] = src->u32s[1]; // fallthrough
+    case 1: d[0] = src->u32s[0]; // fallthrough
+    case 0: break;
+    }
+}
+
+/** @brief Type-agnostic partial load for 32-bit elements (2 elements max) into 64-bit vector. */
+NK_INTERNAL void nk_partial_load_b32x2_serial_(void const *src, nk_b64_vec_t *dst, nk_size_t n) {
+    dst->u64 = 0;
+    nk_u32_t const *s = (nk_u32_t const *)src;
+    switch (n) {
+    default:
+    case 2: dst->u32s[1] = s[1]; // fallthrough
+    case 1: dst->u32s[0] = s[0]; // fallthrough
+    case 0: break;
+    }
+}
+
+/** @brief Type-agnostic partial load for 16-bit elements (8 elements max) into 128-bit vector. */
+NK_INTERNAL void nk_partial_load_b16x8_serial_(void const *src, nk_b128_vec_t *dst, nk_size_t n) {
+    dst->u64s[0] = 0, dst->u64s[1] = 0;
+    nk_u16_t const *s = (nk_u16_t const *)src;
+    switch (n) {
+    default:
+    case 8: dst->u16s[7] = s[7]; // fallthrough
+    case 7: dst->u16s[6] = s[6]; // fallthrough
+    case 6: dst->u16s[5] = s[5]; // fallthrough
+    case 5: dst->u16s[4] = s[4]; // fallthrough
+    case 4: dst->u16s[3] = s[3]; // fallthrough
+    case 3: dst->u16s[2] = s[2]; // fallthrough
+    case 2: dst->u16s[1] = s[1]; // fallthrough
+    case 1: dst->u16s[0] = s[0]; // fallthrough
+    case 0: break;
+    }
+}
+
+/** @brief Type-agnostic partial store for 16-bit elements (8 elements max) from 128-bit vector. */
+NK_INTERNAL void nk_partial_store_b16x8_serial_(nk_b128_vec_t const *src, void *dst, nk_size_t n) {
+    nk_u16_t *d = (nk_u16_t *)dst;
+    switch (n) {
+    default:
+    case 8: d[7] = src->u16s[7]; // fallthrough
+    case 7: d[6] = src->u16s[6]; // fallthrough
+    case 6: d[5] = src->u16s[5]; // fallthrough
+    case 5: d[4] = src->u16s[4]; // fallthrough
+    case 4: d[3] = src->u16s[3]; // fallthrough
+    case 3: d[2] = src->u16s[2]; // fallthrough
+    case 2: d[1] = src->u16s[1]; // fallthrough
+    case 1: d[0] = src->u16s[0]; // fallthrough
+    case 0: break;
+    }
+}
+
+/** @brief Type-agnostic partial load for 16-bit elements (16 elements max) into 256-bit vector. */
+NK_INTERNAL void nk_partial_load_b16x16_serial_(void const *src, nk_b256_vec_t *dst, nk_size_t n) {
+    dst->u64s[0] = 0, dst->u64s[1] = 0, dst->u64s[2] = 0, dst->u64s[3] = 0;
+    nk_u16_t const *s = (nk_u16_t const *)src;
+    switch (n) {
+    default:
+    case 16: dst->u16s[15] = s[15]; // fallthrough
+    case 15: dst->u16s[14] = s[14]; // fallthrough
+    case 14: dst->u16s[13] = s[13]; // fallthrough
+    case 13: dst->u16s[12] = s[12]; // fallthrough
+    case 12: dst->u16s[11] = s[11]; // fallthrough
+    case 11: dst->u16s[10] = s[10]; // fallthrough
+    case 10: dst->u16s[9] = s[9];   // fallthrough
+    case 9: dst->u16s[8] = s[8];    // fallthrough
+    case 8: dst->u16s[7] = s[7];    // fallthrough
+    case 7: dst->u16s[6] = s[6];    // fallthrough
+    case 6: dst->u16s[5] = s[5];    // fallthrough
+    case 5: dst->u16s[4] = s[4];    // fallthrough
+    case 4: dst->u16s[3] = s[3];    // fallthrough
+    case 3: dst->u16s[2] = s[2];    // fallthrough
+    case 2: dst->u16s[1] = s[1];    // fallthrough
+    case 1: dst->u16s[0] = s[0];    // fallthrough
+    case 0: break;
+    }
+}
+
+/** @brief Type-agnostic partial store for 16-bit elements (16 elements max) from 256-bit vector. */
+NK_INTERNAL void nk_partial_store_b16x16_serial_(nk_b256_vec_t const *src, void *dst, nk_size_t n) {
+    nk_u16_t *d = (nk_u16_t *)dst;
+    switch (n) {
+    default:
+    case 16: d[15] = src->u16s[15]; // fallthrough
+    case 15: d[14] = src->u16s[14]; // fallthrough
+    case 14: d[13] = src->u16s[13]; // fallthrough
+    case 13: d[12] = src->u16s[12]; // fallthrough
+    case 12: d[11] = src->u16s[11]; // fallthrough
+    case 11: d[10] = src->u16s[10]; // fallthrough
+    case 10: d[9] = src->u16s[9];   // fallthrough
+    case 9: d[8] = src->u16s[8];    // fallthrough
+    case 8: d[7] = src->u16s[7];    // fallthrough
+    case 7: d[6] = src->u16s[6];    // fallthrough
+    case 6: d[5] = src->u16s[5];    // fallthrough
+    case 5: d[4] = src->u16s[4];    // fallthrough
+    case 4: d[3] = src->u16s[3];    // fallthrough
+    case 3: d[2] = src->u16s[2];    // fallthrough
+    case 2: d[1] = src->u16s[1];    // fallthrough
+    case 1: d[0] = src->u16s[0];    // fallthrough
+    case 0: break;
+    }
+}
+
+/** @brief Type-agnostic partial load for 16-bit elements (4 elements max) into 64-bit vector. */
+NK_INTERNAL void nk_partial_load_b16x4_serial_(void const *src, nk_b64_vec_t *dst, nk_size_t n) {
+    dst->u64 = 0;
+    nk_u16_t const *s = (nk_u16_t const *)src;
+    switch (n) {
+    default:
+    case 4: dst->u16s[3] = s[3]; // fallthrough
+    case 3: dst->u16s[2] = s[2]; // fallthrough
+    case 2: dst->u16s[1] = s[1]; // fallthrough
+    case 1: dst->u16s[0] = s[0]; // fallthrough
+    case 0: break;
+    }
+}
+
+/** @brief Type-agnostic partial store for 16-bit elements (4 elements max) from 64-bit vector. */
+NK_INTERNAL void nk_partial_store_b16x4_serial_(void *dst, nk_b64_vec_t const *src, nk_size_t n) {
+    nk_u16_t *d = (nk_u16_t *)dst;
+    switch (n) {
+    default:
+    case 4: d[3] = src->u16s[3]; // fallthrough
+    case 3: d[2] = src->u16s[2]; // fallthrough
+    case 2: d[1] = src->u16s[1]; // fallthrough
+    case 1: d[0] = src->u16s[0]; // fallthrough
+    case 0: break;
+    }
+}
+
+/** @brief Type-agnostic partial load for 8-bit elements (8 elements max) into 64-bit vector. */
+NK_INTERNAL void nk_partial_load_b8x8_serial_(void const *src, nk_b64_vec_t *dst, nk_size_t n) {
+    dst->u64 = 0;
+    nk_u8_t const *s = (nk_u8_t const *)src;
+    switch (n) {
+    default:
+    case 8: dst->u8s[7] = s[7]; // fallthrough
+    case 7: dst->u8s[6] = s[6]; // fallthrough
+    case 6: dst->u8s[5] = s[5]; // fallthrough
+    case 5: dst->u8s[4] = s[4]; // fallthrough
+    case 4: dst->u8s[3] = s[3]; // fallthrough
+    case 3: dst->u8s[2] = s[2]; // fallthrough
+    case 2: dst->u8s[1] = s[1]; // fallthrough
+    case 1: dst->u8s[0] = s[0]; // fallthrough
+    case 0: break;
+    }
+}
+
+/** @brief Type-agnostic partial store for 8-bit elements (8 elements max) from 64-bit vector. */
+NK_INTERNAL void nk_partial_store_b8x8_serial_(nk_b64_vec_t const *src, void *dst, nk_size_t n) {
+    nk_u8_t *d = (nk_u8_t *)dst;
+    switch (n) {
+    default:
+    case 8: d[7] = src->u8s[7]; // fallthrough
+    case 7: d[6] = src->u8s[6]; // fallthrough
+    case 6: d[5] = src->u8s[5]; // fallthrough
+    case 5: d[4] = src->u8s[4]; // fallthrough
+    case 4: d[3] = src->u8s[3]; // fallthrough
+    case 3: d[2] = src->u8s[2]; // fallthrough
+    case 2: d[1] = src->u8s[1]; // fallthrough
+    case 1: d[0] = src->u8s[0]; // fallthrough
+    case 0: break;
+    }
+}
+
+/** @brief Type-agnostic partial store for 8-bit elements (16 elements max) from 128-bit vector. */
+NK_INTERNAL void nk_partial_store_b8x16_serial_(nk_b128_vec_t const *src, void *dst, nk_size_t n) {
+    nk_u8_t *d = (nk_u8_t *)dst;
+    switch (n) {
+    default:
+    case 16: d[15] = src->u8s[15]; // fallthrough
+    case 15: d[14] = src->u8s[14]; // fallthrough
+    case 14: d[13] = src->u8s[13]; // fallthrough
+    case 13: d[12] = src->u8s[12]; // fallthrough
+    case 12: d[11] = src->u8s[11]; // fallthrough
+    case 11: d[10] = src->u8s[10]; // fallthrough
+    case 10: d[9] = src->u8s[9];   // fallthrough
+    case 9: d[8] = src->u8s[8];    // fallthrough
+    case 8: d[7] = src->u8s[7];    // fallthrough
+    case 7: d[6] = src->u8s[6];    // fallthrough
+    case 6: d[5] = src->u8s[5];    // fallthrough
+    case 5: d[4] = src->u8s[4];    // fallthrough
+    case 4: d[3] = src->u8s[3];    // fallthrough
+    case 3: d[2] = src->u8s[2];    // fallthrough
+    case 2: d[1] = src->u8s[1];    // fallthrough
+    case 1: d[0] = src->u8s[0];    // fallthrough
+    case 0: break;
+    }
+}
+
+/** @brief Type-agnostic partial store for 8-bit elements (32 elements max) from 256-bit vector. */
+NK_INTERNAL void nk_partial_store_b8x32_serial_(nk_b256_vec_t const *src, void *dst, nk_size_t n) {
+    nk_u8_t *d = (nk_u8_t *)dst;
+    switch (n) {
+    default:
+    case 32: d[31] = src->u8s[31]; // fallthrough
+    case 31: d[30] = src->u8s[30]; // fallthrough
+    case 30: d[29] = src->u8s[29]; // fallthrough
+    case 29: d[28] = src->u8s[28]; // fallthrough
+    case 28: d[27] = src->u8s[27]; // fallthrough
+    case 27: d[26] = src->u8s[26]; // fallthrough
+    case 26: d[25] = src->u8s[25]; // fallthrough
+    case 25: d[24] = src->u8s[24]; // fallthrough
+    case 24: d[23] = src->u8s[23]; // fallthrough
+    case 23: d[22] = src->u8s[22]; // fallthrough
+    case 22: d[21] = src->u8s[21]; // fallthrough
+    case 21: d[20] = src->u8s[20]; // fallthrough
+    case 20: d[19] = src->u8s[19]; // fallthrough
+    case 19: d[18] = src->u8s[18]; // fallthrough
+    case 18: d[17] = src->u8s[17]; // fallthrough
+    case 17: d[16] = src->u8s[16]; // fallthrough
+    case 16: d[15] = src->u8s[15]; // fallthrough
+    case 15: d[14] = src->u8s[14]; // fallthrough
+    case 14: d[13] = src->u8s[13]; // fallthrough
+    case 13: d[12] = src->u8s[12]; // fallthrough
+    case 12: d[11] = src->u8s[11]; // fallthrough
+    case 11: d[10] = src->u8s[10]; // fallthrough
+    case 10: d[9] = src->u8s[9];   // fallthrough
+    case 9: d[8] = src->u8s[8];    // fallthrough
+    case 8: d[7] = src->u8s[7];    // fallthrough
+    case 7: d[6] = src->u8s[6];    // fallthrough
+    case 6: d[5] = src->u8s[5];    // fallthrough
+    case 5: d[4] = src->u8s[4];    // fallthrough
+    case 4: d[3] = src->u8s[3];    // fallthrough
+    case 3: d[2] = src->u8s[2];    // fallthrough
+    case 2: d[1] = src->u8s[1];    // fallthrough
+    case 1: d[0] = src->u8s[0];    // fallthrough
+    case 0: break;
+    }
+}
+
+/** @brief Type-agnostic partial load for 8-bit elements (16 elements max) into 128-bit vector. */
+NK_INTERNAL void nk_partial_load_b8x16_serial_(void const *src, nk_b128_vec_t *dst, nk_size_t n) {
+    dst->u64s[0] = 0, dst->u64s[1] = 0;
+    nk_u8_t const *s = (nk_u8_t const *)src;
+    switch (n) {
+    default:
+    case 16: dst->u8s[15] = s[15]; // fallthrough
+    case 15: dst->u8s[14] = s[14]; // fallthrough
+    case 14: dst->u8s[13] = s[13]; // fallthrough
+    case 13: dst->u8s[12] = s[12]; // fallthrough
+    case 12: dst->u8s[11] = s[11]; // fallthrough
+    case 11: dst->u8s[10] = s[10]; // fallthrough
+    case 10: dst->u8s[9] = s[9];   // fallthrough
+    case 9: dst->u8s[8] = s[8];    // fallthrough
+    case 8: dst->u8s[7] = s[7];    // fallthrough
+    case 7: dst->u8s[6] = s[6];    // fallthrough
+    case 6: dst->u8s[5] = s[5];    // fallthrough
+    case 5: dst->u8s[4] = s[4];    // fallthrough
+    case 4: dst->u8s[3] = s[3];    // fallthrough
+    case 3: dst->u8s[2] = s[2];    // fallthrough
+    case 2: dst->u8s[1] = s[1];    // fallthrough
+    case 1: dst->u8s[0] = s[0];    // fallthrough
+    case 0: break;
+    }
+}
+
+/** @brief Type-agnostic partial load for 8-bit elements (4 elements max) into 32-bit vector. */
+NK_INTERNAL nk_b32_vec_t nk_partial_load_b8x4_serial_(void const *src, nk_size_t n) {
+    nk_b32_vec_t dst = {0};
+    nk_u8_t const *s = (nk_u8_t const *)src;
+    switch (n) {
+    default:
+    case 4: dst.u8s[3] = s[3]; // fallthrough
+    case 3: dst.u8s[2] = s[2]; // fallthrough
+    case 2: dst.u8s[1] = s[1]; // fallthrough
+    case 1: dst.u8s[0] = s[0]; // fallthrough
+    case 0: break;
+    }
+    return dst;
+}
+
+/** @brief Partial store for 8-bit elements (up to 4) from nk_b32_vec_t. */
+NK_INTERNAL void nk_partial_store_b8x4_serial_(nk_b32_vec_t const *src, void *dst, nk_size_t n) {
+    nk_u8_t *d = (nk_u8_t *)dst;
+    switch (n) {
+    default:
+    case 4: d[3] = src->u8s[3]; // fallthrough
+    case 3: d[2] = src->u8s[2]; // fallthrough
+    case 2: d[1] = src->u8s[1]; // fallthrough
+    case 1: d[0] = src->u8s[0]; // fallthrough
+    case 0: break;
+    }
+}
+
+/** @brief Partial load for 8-bit elements (32 max) into 256-bit vector (zeros in remaining slots). */
+NK_INTERNAL void nk_partial_load_b8x32_serial_(void const *src, nk_b256_vec_t *dst, nk_size_t n) {
+    dst->u64s[0] = 0, dst->u64s[1] = 0, dst->u64s[2] = 0, dst->u64s[3] = 0;
+    nk_u8_t const *s = (nk_u8_t const *)src;
+    switch (n) {
+    default:
+    case 32: dst->u8s[31] = s[31]; // fallthrough
+    case 31: dst->u8s[30] = s[30]; // fallthrough
+    case 30: dst->u8s[29] = s[29]; // fallthrough
+    case 29: dst->u8s[28] = s[28]; // fallthrough
+    case 28: dst->u8s[27] = s[27]; // fallthrough
+    case 27: dst->u8s[26] = s[26]; // fallthrough
+    case 26: dst->u8s[25] = s[25]; // fallthrough
+    case 25: dst->u8s[24] = s[24]; // fallthrough
+    case 24: dst->u8s[23] = s[23]; // fallthrough
+    case 23: dst->u8s[22] = s[22]; // fallthrough
+    case 22: dst->u8s[21] = s[21]; // fallthrough
+    case 21: dst->u8s[20] = s[20]; // fallthrough
+    case 20: dst->u8s[19] = s[19]; // fallthrough
+    case 19: dst->u8s[18] = s[18]; // fallthrough
+    case 18: dst->u8s[17] = s[17]; // fallthrough
+    case 17: dst->u8s[16] = s[16]; // fallthrough
+    case 16: dst->u8s[15] = s[15]; // fallthrough
+    case 15: dst->u8s[14] = s[14]; // fallthrough
+    case 14: dst->u8s[13] = s[13]; // fallthrough
+    case 13: dst->u8s[12] = s[12]; // fallthrough
+    case 12: dst->u8s[11] = s[11]; // fallthrough
+    case 11: dst->u8s[10] = s[10]; // fallthrough
+    case 10: dst->u8s[9] = s[9];   // fallthrough
+    case 9: dst->u8s[8] = s[8];    // fallthrough
+    case 8: dst->u8s[7] = s[7];    // fallthrough
+    case 7: dst->u8s[6] = s[6];    // fallthrough
+    case 6: dst->u8s[5] = s[5];    // fallthrough
+    case 5: dst->u8s[4] = s[4];    // fallthrough
+    case 4: dst->u8s[3] = s[3];    // fallthrough
+    case 3: dst->u8s[2] = s[2];    // fallthrough
+    case 2: dst->u8s[1] = s[1];    // fallthrough
+    case 1: dst->u8s[0] = s[0];    // fallthrough
+    case 0: break;
+    }
+}
+
+/** @brief Partial load for 4-bit nibbles (64 max = 32 bytes) into 256-bit vector (zeros in remaining slots). */
+NK_INTERNAL void nk_partial_load_b4x64_serial_(void const *src, nk_b256_vec_t *dst, nk_size_t n) {
+    dst->u64s[0] = 0, dst->u64s[1] = 0, dst->u64s[2] = 0, dst->u64s[3] = 0;
+    nk_u8_t const *s = (nk_u8_t const *)src;
+    nk_size_t n_bytes = nk_size_divide_round_up_(n, 2);
+    for (nk_size_t i = 0; i < n_bytes && i < 32; i++) dst->u8s[i] = s[i];
+}
+
+/** @brief Partial load for 4-bit nibbles (32 max = 16 bytes) into 128-bit vector (zeros in remaining slots). */
+NK_INTERNAL void nk_partial_load_b4x32_serial_(void const *src, nk_b128_vec_t *dst, nk_size_t n) {
+    dst->u64s[0] = 0, dst->u64s[1] = 0;
+    nk_u8_t const *s = (nk_u8_t const *)src;
+    nk_size_t n_bytes = nk_size_divide_round_up_(n, 2);
+    for (nk_size_t i = 0; i < n_bytes && i < 16; i++) dst->u8s[i] = s[i];
+}
+
+/** @brief Partial load for 1-bit elements (128 max = 16 bytes) into 128-bit vector (zeros in remaining slots). */
+NK_INTERNAL void nk_partial_load_b1x128_serial_(void const *src, nk_b128_vec_t *dst, nk_size_t n_bits) {
+    dst->u64s[0] = 0, dst->u64s[1] = 0;
+    nk_u8_t const *s = (nk_u8_t const *)src;
+    nk_size_t n_bytes = nk_size_divide_round_up_(n_bits, 8);
+    for (nk_size_t i = 0; i < n_bytes && i < 16; i++) dst->u8s[i] = s[i];
+}
+
+/** @brief Partial load for binary (u1) data into 256-bit vector, converting n_bits → n_bytes. */
+NK_INTERNAL void nk_partial_load_b1x256_serial_(void const *src, nk_b256_vec_t *dst, nk_size_t n_bits) {
+    nk_size_t n_bytes = nk_size_divide_round_up_(n_bits, 8);
+    nk_partial_load_b8x32_serial_(src, dst, n_bytes);
+}
+
+/** @brief Partial load for 4-bit nibbles (16 max = 8 bytes) into 64-bit vector (zeros in remaining slots). */
+NK_INTERNAL void nk_partial_load_b4x16_serial_(void const *src, nk_b64_vec_t *dst, nk_size_t n) {
+    dst->u64 = 0;
+    nk_u8_t const *s = (nk_u8_t const *)src;
+    nk_size_t n_bytes = nk_size_divide_round_up_(n, 2);
+    for (nk_size_t i = 0; i < n_bytes && i < 8; i++) ((nk_u8_t *)&dst->u64)[i] = s[i];
+}
+
+/** @brief Strided partial load for 32-bit elements (4 max) into 128-bit vector. */
+NK_INTERNAL void nk_strided_load_b32x4_serial_(void const *src, nk_size_t stride_elements, nk_b128_vec_t *dst,
+                                               nk_size_t n) {
+    dst->u64s[0] = 0, dst->u64s[1] = 0;
+    nk_u32_t const *s = (nk_u32_t const *)src;
+    for (nk_size_t i = 0; i < n && i < 4; ++i) dst->u32s[i] = s[i * stride_elements];
+}
+
+/** @brief Strided partial load for 16-bit elements (8 max) into 128-bit vector. */
+NK_INTERNAL void nk_strided_load_b16x8_serial_(void const *src, nk_size_t stride_elements, nk_b128_vec_t *dst,
+                                               nk_size_t n) {
+    dst->u64s[0] = 0, dst->u64s[1] = 0;
+    nk_u16_t const *s = (nk_u16_t const *)src;
+    for (nk_size_t i = 0; i < n && i < 8; ++i) dst->u16s[i] = s[i * stride_elements];
+}
+
+/** @brief Strided partial load for 8-bit elements (16 max) into 128-bit vector. */
+NK_INTERNAL void nk_strided_load_b8x16_serial_(void const *src, nk_size_t stride_elements, nk_b128_vec_t *dst,
+                                               nk_size_t n) {
+    dst->u64s[0] = 0, dst->u64s[1] = 0;
+    nk_u8_t const *s = (nk_u8_t const *)src;
+    for (nk_size_t i = 0; i < n && i < 16; ++i) dst->u8s[i] = s[i * stride_elements];
+}
+
+#pragma endregion Type Punned Loads and Stores
 
 /**
  *  @brief Expands an `f16` (IEEE-754 16-bit) to a `float`.
@@ -96,6 +620,28 @@ NK_PUBLIC void nk_f16_to_f32_serial(nk_f16_t const *src, nk_f32_t *dest) {
 
     *dest = conv.f;
 #endif
+}
+
+/** @brief Load 4 × f16 from memory and upcast them to 4 × f32. */
+NK_INTERNAL void nk_load_f16x4_to_f32x4_serial_(void const *src, nk_b128_vec_t *dst) {
+    nk_f16_t const *scalars = (nk_f16_t const *)src;
+    nk_f16_to_f32_serial(scalars + 0, dst->f32s + 0);
+    nk_f16_to_f32_serial(scalars + 1, dst->f32s + 1);
+    nk_f16_to_f32_serial(scalars + 2, dst->f32s + 2);
+    nk_f16_to_f32_serial(scalars + 3, dst->f32s + 3);
+}
+
+/** @brief Partial load for up to 4 × f16 with upcast to 4 × f32. */
+NK_INTERNAL void nk_partial_load_f16x4_to_f32x4_serial_(nk_f16_t const *src, nk_b128_vec_t *dst, nk_size_t n) {
+    dst->u64s[0] = 0, dst->u64s[1] = 0;
+    switch (n) {
+    default:
+    case 4: nk_f16_to_f32_serial(src + 3, dst->f32s + 3); // fallthrough
+    case 3: nk_f16_to_f32_serial(src + 2, dst->f32s + 2); // fallthrough
+    case 2: nk_f16_to_f32_serial(src + 1, dst->f32s + 1); // fallthrough
+    case 1: nk_f16_to_f32_serial(src + 0, dst->f32s + 0); // fallthrough
+    case 0: break;
+    }
 }
 
 /**
@@ -309,8 +855,8 @@ NK_PUBLIC void nk_e4m3_to_f32_serial(nk_e4m3_t const *src, nk_f32_t *dest) {
  *      NaN          0x7FC00000    0x7F      Quiet NaN
  *      1.0          0x3F800000    0x38      Normal (exp=7, mant=0)
  *      448+         >0x43E00000   0x7E      Overflow → max
- *      2⁻⁶         0x3E800000    0x08      Min normal
- *      <2⁻¹² × ⁵     <0x39800000   0x00      Underflow → zero (RNE boundary)
+ *      2⁻⁶          0x3E800000    0x08      Min normal
+ *      ≤2⁻¹⁰        ≤0x3A800000   0x00      Underflow → zero (RNE boundary)
  *
  *  References:
  *      https://arxiv.org/pdf/2209.05433 (NVIDIA/Intel/Arm FP8 paper)
@@ -552,8 +1098,8 @@ NK_PUBLIC void nk_e5m2_to_f32_serial(nk_e5m2_t const *src, nk_f32_t *dest) {
  *      NaN          0x7FC00000    0x7D      Quiet NaN
  *      1.0          0x3F800000    0x3C      Normal (exp=15, mant=0)
  *      57344+       >0x47600000   0x7C      Overflow → infinity
- *      2⁻¹⁴        0x38800000    0x04      Min normal
- *      <2⁻¹⁷ × ⁵     <0x36800000   0x00      Underflow → zero (RNE boundary)
+ *      2⁻¹⁴         0x38800000    0x04      Min normal
+ *      ≤2⁻¹⁷        ≤0x37000000   0x00      Underflow → zero (RNE boundary)
  *
  *  References:
  *      https://arxiv.org/pdf/2209.05433 (NVIDIA/Intel/Arm FP8 paper)
@@ -1159,17 +1705,6 @@ NK_INTERNAL void nk_u64_to_u32_serial(nk_u64_t const *x, nk_u32_t *y) {
     *y = (nk_u32_t)(*x > 4294967295ull ? 4294967295ull : *x);
 }
 
-NK_PUBLIC void nk_f16_to_f64_(nk_f16_t const *src, nk_f64_t *dest) {
-    nk_f32_t f32;
-    nk_f16_to_f32_serial(src, &f32);
-    *dest = f32;
-}
-NK_PUBLIC void nk_bf16_to_f64_(nk_bf16_t const *src, nk_f64_t *dest) {
-    nk_f32_t f32;
-    nk_bf16_to_f32_serial(src, &f32);
-    *dest = f32;
-}
-
 NK_INTERNAL void nk_u64_to_i64_serial(nk_u64_t const *x, nk_i64_t *y) {
     *y = (nk_i64_t)(*x >= 9223372036854775807ull ? 9223372036854775807ll : *x);
 }
@@ -1196,419 +1731,21 @@ NK_INTERNAL void nk_u64_to_bf16_serial(nk_u64_t const *x, nk_bf16_t *y) {
     nk_f32_to_bf16_serial(&f32, y);
 }
 
-#pragma region - Type Punned Loads and Stores
-
-/** @brief Type-agnostic 256-bit full load. */
-NK_INTERNAL void nk_load_b256_serial_(void const *src, nk_b256_vec_t *dst) {
-    nk_u64_t const *s = (nk_u64_t const *)src;
-    dst->u64s[0] = s[0], dst->u64s[1] = s[1], dst->u64s[2] = s[2], dst->u64s[3] = s[3];
+/** @brief Convert a pair of i4 (4-bit signed integer, -8 to 7) nibbles into signed integers. */
+NK_PUBLIC void nk_i4x2_to_i8x2_serial(nk_i4x2_t const *src, nk_i8_t *dest) {
+    nk_u8_t byte = *(nk_u8_t const *)src;
+    nk_u8_t high_nibble = byte >> 4;
+    nk_u8_t low_nibble = byte & 0x0F;
+    // Sign extend: 0-7 → 0-7, 8-15 → -8 to -1
+    dest[0] = (nk_i8_t)((high_nibble ^ 8) - 8);
+    dest[1] = (nk_i8_t)((low_nibble ^ 8) - 8);
 }
 
-/** @brief Type-agnostic 128-bit full load. */
-NK_INTERNAL void nk_load_b128_serial_(void const *src, nk_b128_vec_t *dst) {
-    nk_u64_t const *s = (nk_u64_t const *)src;
-    dst->u64s[0] = s[0], dst->u64s[1] = s[1];
-}
-
-/** @brief Type-agnostic 64-bit full load. */
-NK_INTERNAL void nk_load_b64_serial_(void const *src, nk_b64_vec_t *dst) { dst->u64 = *(nk_u64_t const *)src; }
-
-/** @brief Type-agnostic partial load for 32-bit elements (8 elements max) into 256-bit vector. */
-NK_INTERNAL void nk_partial_load_b32x8_serial_(void const *src, nk_b256_vec_t *dst, nk_size_t n) {
-    dst->u64s[0] = 0, dst->u64s[1] = 0, dst->u64s[2] = 0, dst->u64s[3] = 0;
-    nk_u32_t const *s = (nk_u32_t const *)src;
-    switch (n) {
-    default:
-    case 8: dst->u32s[7] = s[7]; // fallthrough
-    case 7: dst->u32s[6] = s[6]; // fallthrough
-    case 6: dst->u32s[5] = s[5]; // fallthrough
-    case 5: dst->u32s[4] = s[4]; // fallthrough
-    case 4: dst->u32s[3] = s[3]; // fallthrough
-    case 3: dst->u32s[2] = s[2]; // fallthrough
-    case 2: dst->u32s[1] = s[1]; // fallthrough
-    case 1: dst->u32s[0] = s[0]; // fallthrough
-    case 0: break;
-    }
-}
-
-/** @brief Type-agnostic partial load for 32-bit elements (4 elements max) into 128-bit vector. */
-NK_INTERNAL void nk_partial_load_b32x4_serial_(void const *src, nk_b128_vec_t *dst, nk_size_t n) {
-    dst->u64s[0] = 0, dst->u64s[1] = 0;
-    nk_u32_t const *s = (nk_u32_t const *)src;
-    switch (n) {
-    default:
-    case 4: dst->u32s[3] = s[3]; // fallthrough
-    case 3: dst->u32s[2] = s[2]; // fallthrough
-    case 2: dst->u32s[1] = s[1]; // fallthrough
-    case 1: dst->u32s[0] = s[0]; // fallthrough
-    case 0: break;
-    }
-}
-
-/** @brief Type-agnostic partial load for 8-bit elements (8 elements max) into 64-bit vector. */
-NK_INTERNAL void nk_partial_load_b8x8_serial_(void const *src, nk_b64_vec_t *dst, nk_size_t n) {
-    dst->u64 = 0;
-    nk_u8_t const *s = (nk_u8_t const *)src;
-    switch (n) {
-    default:
-    case 8: dst->u8s[7] = s[7]; // fallthrough
-    case 7: dst->u8s[6] = s[6]; // fallthrough
-    case 6: dst->u8s[5] = s[5]; // fallthrough
-    case 5: dst->u8s[4] = s[4]; // fallthrough
-    case 4: dst->u8s[3] = s[3]; // fallthrough
-    case 3: dst->u8s[2] = s[2]; // fallthrough
-    case 2: dst->u8s[1] = s[1]; // fallthrough
-    case 1: dst->u8s[0] = s[0]; // fallthrough
-    case 0: break;
-    }
-}
-
-/** @brief Type-agnostic partial load for 8-bit elements (4 elements max) into 32-bit vector. */
-NK_INTERNAL nk_b32_vec_t nk_partial_load_b8x4_serial_(void const *src, nk_size_t n) {
-    nk_b32_vec_t dst = {0};
-    nk_u8_t const *s = (nk_u8_t const *)src;
-    switch (n) {
-    default:
-    case 4: dst.u8s[3] = s[3]; // fallthrough
-    case 3: dst.u8s[2] = s[2]; // fallthrough
-    case 2: dst.u8s[1] = s[1]; // fallthrough
-    case 1: dst.u8s[0] = s[0]; // fallthrough
-    case 0: break;
-    }
-    return dst;
-}
-
-/** @brief Partial store for 8-bit elements (up to 4) from nk_b32_vec_t. */
-NK_INTERNAL void nk_partial_store_b8x4_serial_(nk_b32_vec_t const *src, void *dst, nk_size_t n) {
-    nk_u8_t *d = (nk_u8_t *)dst;
-    switch (n) {
-    default:
-    case 4: d[3] = src->u8s[3]; // fallthrough
-    case 3: d[2] = src->u8s[2]; // fallthrough
-    case 2: d[1] = src->u8s[1]; // fallthrough
-    case 1: d[0] = src->u8s[0]; // fallthrough
-    case 0: break;
-    }
-}
-
-/** @brief Type-agnostic partial load for 16-bit elements (8 elements max) into 128-bit vector. */
-NK_INTERNAL void nk_partial_load_b16x8_serial_(void const *src, nk_b128_vec_t *dst, nk_size_t n) {
-    dst->u64s[0] = 0, dst->u64s[1] = 0;
-    nk_u16_t const *s = (nk_u16_t const *)src;
-    switch (n) {
-    default:
-    case 8: dst->u16s[7] = s[7]; // fallthrough
-    case 7: dst->u16s[6] = s[6]; // fallthrough
-    case 6: dst->u16s[5] = s[5]; // fallthrough
-    case 5: dst->u16s[4] = s[4]; // fallthrough
-    case 4: dst->u16s[3] = s[3]; // fallthrough
-    case 3: dst->u16s[2] = s[2]; // fallthrough
-    case 2: dst->u16s[1] = s[1]; // fallthrough
-    case 1: dst->u16s[0] = s[0]; // fallthrough
-    case 0: break;
-    }
-}
-
-/** @brief Type-agnostic partial load for 8-bit elements (16 elements max) into 128-bit vector. */
-NK_INTERNAL void nk_partial_load_b8x16_serial_(void const *src, nk_b128_vec_t *dst, nk_size_t n) {
-    dst->u64s[0] = 0, dst->u64s[1] = 0;
-    nk_u8_t const *s = (nk_u8_t const *)src;
-    switch (n) {
-    default:
-    case 16: dst->u8s[15] = s[15]; // fallthrough
-    case 15: dst->u8s[14] = s[14]; // fallthrough
-    case 14: dst->u8s[13] = s[13]; // fallthrough
-    case 13: dst->u8s[12] = s[12]; // fallthrough
-    case 12: dst->u8s[11] = s[11]; // fallthrough
-    case 11: dst->u8s[10] = s[10]; // fallthrough
-    case 10: dst->u8s[9] = s[9];   // fallthrough
-    case 9: dst->u8s[8] = s[8];    // fallthrough
-    case 8: dst->u8s[7] = s[7];    // fallthrough
-    case 7: dst->u8s[6] = s[6];    // fallthrough
-    case 6: dst->u8s[5] = s[5];    // fallthrough
-    case 5: dst->u8s[4] = s[4];    // fallthrough
-    case 4: dst->u8s[3] = s[3];    // fallthrough
-    case 3: dst->u8s[2] = s[2];    // fallthrough
-    case 2: dst->u8s[1] = s[1];    // fallthrough
-    case 1: dst->u8s[0] = s[0];    // fallthrough
-    case 0: break;
-    }
-}
-
-/** @brief Type-agnostic partial load for 16-bit elements (16 elements max) into 256-bit vector. */
-NK_INTERNAL void nk_partial_load_b16x16_serial_(void const *src, nk_b256_vec_t *dst, nk_size_t n) {
-    dst->u64s[0] = 0, dst->u64s[1] = 0, dst->u64s[2] = 0, dst->u64s[3] = 0;
-    nk_u16_t const *s = (nk_u16_t const *)src;
-    switch (n) {
-    default:
-    case 16: dst->u16s[15] = s[15]; // fallthrough
-    case 15: dst->u16s[14] = s[14]; // fallthrough
-    case 14: dst->u16s[13] = s[13]; // fallthrough
-    case 13: dst->u16s[12] = s[12]; // fallthrough
-    case 12: dst->u16s[11] = s[11]; // fallthrough
-    case 11: dst->u16s[10] = s[10]; // fallthrough
-    case 10: dst->u16s[9] = s[9];   // fallthrough
-    case 9: dst->u16s[8] = s[8];    // fallthrough
-    case 8: dst->u16s[7] = s[7];    // fallthrough
-    case 7: dst->u16s[6] = s[6];    // fallthrough
-    case 6: dst->u16s[5] = s[5];    // fallthrough
-    case 5: dst->u16s[4] = s[4];    // fallthrough
-    case 4: dst->u16s[3] = s[3];    // fallthrough
-    case 3: dst->u16s[2] = s[2];    // fallthrough
-    case 2: dst->u16s[1] = s[1];    // fallthrough
-    case 1: dst->u16s[0] = s[0];    // fallthrough
-    case 0: break;
-    }
-}
-
-/** @brief Partial load for 8-bit elements (32 max) into 256-bit vector (zeros in remaining slots). */
-NK_INTERNAL void nk_partial_load_b8x32_serial_(void const *src, nk_b256_vec_t *dst, nk_size_t n) {
-    dst->u64s[0] = 0, dst->u64s[1] = 0, dst->u64s[2] = 0, dst->u64s[3] = 0;
-    nk_u8_t const *s = (nk_u8_t const *)src;
-    switch (n) {
-    default:
-    case 32: dst->u8s[31] = s[31]; // fallthrough
-    case 31: dst->u8s[30] = s[30]; // fallthrough
-    case 30: dst->u8s[29] = s[29]; // fallthrough
-    case 29: dst->u8s[28] = s[28]; // fallthrough
-    case 28: dst->u8s[27] = s[27]; // fallthrough
-    case 27: dst->u8s[26] = s[26]; // fallthrough
-    case 26: dst->u8s[25] = s[25]; // fallthrough
-    case 25: dst->u8s[24] = s[24]; // fallthrough
-    case 24: dst->u8s[23] = s[23]; // fallthrough
-    case 23: dst->u8s[22] = s[22]; // fallthrough
-    case 22: dst->u8s[21] = s[21]; // fallthrough
-    case 21: dst->u8s[20] = s[20]; // fallthrough
-    case 20: dst->u8s[19] = s[19]; // fallthrough
-    case 19: dst->u8s[18] = s[18]; // fallthrough
-    case 18: dst->u8s[17] = s[17]; // fallthrough
-    case 17: dst->u8s[16] = s[16]; // fallthrough
-    case 16: dst->u8s[15] = s[15]; // fallthrough
-    case 15: dst->u8s[14] = s[14]; // fallthrough
-    case 14: dst->u8s[13] = s[13]; // fallthrough
-    case 13: dst->u8s[12] = s[12]; // fallthrough
-    case 12: dst->u8s[11] = s[11]; // fallthrough
-    case 11: dst->u8s[10] = s[10]; // fallthrough
-    case 10: dst->u8s[9] = s[9];   // fallthrough
-    case 9: dst->u8s[8] = s[8];    // fallthrough
-    case 8: dst->u8s[7] = s[7];    // fallthrough
-    case 7: dst->u8s[6] = s[6];    // fallthrough
-    case 6: dst->u8s[5] = s[5];    // fallthrough
-    case 5: dst->u8s[4] = s[4];    // fallthrough
-    case 4: dst->u8s[3] = s[3];    // fallthrough
-    case 3: dst->u8s[2] = s[2];    // fallthrough
-    case 2: dst->u8s[1] = s[1];    // fallthrough
-    case 1: dst->u8s[0] = s[0];    // fallthrough
-    case 0: break;
-    }
-}
-
-/** @brief Type-agnostic partial store for 32-bit elements (8 elements max) from 256-bit vector. */
-NK_INTERNAL void nk_partial_store_b32x8_serial_(nk_b256_vec_t const *src, void *dst, nk_size_t n) {
-    nk_u32_t *d = (nk_u32_t *)dst;
-    switch (n) {
-    default:
-    case 8: d[7] = src->u32s[7]; // fallthrough
-    case 7: d[6] = src->u32s[6]; // fallthrough
-    case 6: d[5] = src->u32s[5]; // fallthrough
-    case 5: d[4] = src->u32s[4]; // fallthrough
-    case 4: d[3] = src->u32s[3]; // fallthrough
-    case 3: d[2] = src->u32s[2]; // fallthrough
-    case 2: d[1] = src->u32s[1]; // fallthrough
-    case 1: d[0] = src->u32s[0]; // fallthrough
-    case 0: break;
-    }
-}
-
-/** @brief Type-agnostic partial store for 32-bit elements (4 elements max) from 128-bit vector. */
-NK_INTERNAL void nk_partial_store_b32x4_serial_(nk_b128_vec_t const *src, void *dst, nk_size_t n) {
-    nk_u32_t *d = (nk_u32_t *)dst;
-    switch (n) {
-    default:
-    case 4: d[3] = src->u32s[3]; // fallthrough
-    case 3: d[2] = src->u32s[2]; // fallthrough
-    case 2: d[1] = src->u32s[1]; // fallthrough
-    case 1: d[0] = src->u32s[0]; // fallthrough
-    case 0: break;
-    }
-}
-
-/** @brief Type-agnostic partial store for 16-bit elements (8 elements max) from 128-bit vector. */
-NK_INTERNAL void nk_partial_store_b16x8_serial_(nk_b128_vec_t const *src, void *dst, nk_size_t n) {
-    nk_u16_t *d = (nk_u16_t *)dst;
-    switch (n) {
-    default:
-    case 8: d[7] = src->u16s[7]; // fallthrough
-    case 7: d[6] = src->u16s[6]; // fallthrough
-    case 6: d[5] = src->u16s[5]; // fallthrough
-    case 5: d[4] = src->u16s[4]; // fallthrough
-    case 4: d[3] = src->u16s[3]; // fallthrough
-    case 3: d[2] = src->u16s[2]; // fallthrough
-    case 2: d[1] = src->u16s[1]; // fallthrough
-    case 1: d[0] = src->u16s[0]; // fallthrough
-    case 0: break;
-    }
-}
-
-/** @brief Type-agnostic partial store for 16-bit elements (4 elements max) from 64-bit vector. */
-NK_INTERNAL void nk_partial_store_b16x4_serial_(void *dst, nk_b64_vec_t const *src, nk_size_t n) {
-    nk_u16_t *d = (nk_u16_t *)dst;
-    switch (n) {
-    default:
-    case 4: d[3] = src->u16s[3]; // fallthrough
-    case 3: d[2] = src->u16s[2]; // fallthrough
-    case 2: d[1] = src->u16s[1]; // fallthrough
-    case 1: d[0] = src->u16s[0]; // fallthrough
-    case 0: break;
-    }
-}
-
-/** @brief Type-agnostic partial store for 8-bit elements (8 elements max) from 64-bit vector. */
-NK_INTERNAL void nk_partial_store_b8x8_serial_(nk_b64_vec_t const *src, void *dst, nk_size_t n) {
-    nk_u8_t *d = (nk_u8_t *)dst;
-    switch (n) {
-    default:
-    case 8: d[7] = src->u8s[7]; // fallthrough
-    case 7: d[6] = src->u8s[6]; // fallthrough
-    case 6: d[5] = src->u8s[5]; // fallthrough
-    case 5: d[4] = src->u8s[4]; // fallthrough
-    case 4: d[3] = src->u8s[3]; // fallthrough
-    case 3: d[2] = src->u8s[2]; // fallthrough
-    case 2: d[1] = src->u8s[1]; // fallthrough
-    case 1: d[0] = src->u8s[0]; // fallthrough
-    case 0: break;
-    }
-}
-
-/** @brief Type-agnostic partial load for 64-bit elements (4 elements max) into 256-bit vector. */
-NK_INTERNAL void nk_partial_load_b64x4_serial_(void const *src, nk_b256_vec_t *dst, nk_size_t n) {
-    nk_u64_t const *s = (nk_u64_t const *)src;
-    dst->u64s[0] = 0, dst->u64s[1] = 0, dst->u64s[2] = 0, dst->u64s[3] = 0;
-    switch (n) {
-    default:
-    case 4: dst->u64s[3] = s[3]; // fallthrough
-    case 3: dst->u64s[2] = s[2]; // fallthrough
-    case 2: dst->u64s[1] = s[1]; // fallthrough
-    case 1: dst->u64s[0] = s[0]; // fallthrough
-    case 0: break;
-    }
-}
-
-/** @brief Type-agnostic partial store for 64-bit elements (4 elements max) from 256-bit vector. */
-NK_INTERNAL void nk_partial_store_b64x4_serial_(nk_b256_vec_t const *src, void *dst, nk_size_t n) {
-    nk_u64_t *d = (nk_u64_t *)dst;
-    switch (n) {
-    default:
-    case 4: d[3] = src->u64s[3]; // fallthrough
-    case 3: d[2] = src->u64s[2]; // fallthrough
-    case 2: d[1] = src->u64s[1]; // fallthrough
-    case 1: d[0] = src->u64s[0]; // fallthrough
-    case 0: break;
-    }
-}
-
-/** @brief Type-agnostic partial load for 32-bit elements (2 elements max) into 64-bit vector. */
-NK_INTERNAL void nk_partial_load_b32x2_serial_(void const *src, nk_b64_vec_t *dst, nk_size_t n) {
-    dst->u64 = 0;
-    nk_u32_t const *s = (nk_u32_t const *)src;
-    switch (n) {
-    default:
-    case 2: dst->u32s[1] = s[1]; // fallthrough
-    case 1: dst->u32s[0] = s[0]; // fallthrough
-    case 0: break;
-    }
-}
-
-/** @brief Type-agnostic partial load for 16-bit elements (4 elements max) into 64-bit vector. */
-NK_INTERNAL void nk_partial_load_b16x4_serial_(void const *src, nk_b64_vec_t *dst, nk_size_t n) {
-    dst->u64 = 0;
-    nk_u16_t const *s = (nk_u16_t const *)src;
-    switch (n) {
-    default:
-    case 4: dst->u16s[3] = s[3]; // fallthrough
-    case 3: dst->u16s[2] = s[2]; // fallthrough
-    case 2: dst->u16s[1] = s[1]; // fallthrough
-    case 1: dst->u16s[0] = s[0]; // fallthrough
-    case 0: break;
-    }
-}
-
-/** @brief Partial load for 4-bit nibbles (64 max = 32 bytes) into 256-bit vector (zeros in remaining slots). */
-NK_INTERNAL void nk_partial_load_b4x64_serial_(void const *src, nk_b256_vec_t *dst, nk_size_t n) {
-    dst->u64s[0] = 0, dst->u64s[1] = 0, dst->u64s[2] = 0, dst->u64s[3] = 0;
-    nk_u8_t const *s = (nk_u8_t const *)src;
-    nk_size_t n_bytes = nk_size_divide_round_up_(n, 2);
-    for (nk_size_t i = 0; i < n_bytes && i < 32; i++) dst->u8s[i] = s[i];
-}
-
-/** @brief Partial load for 4-bit nibbles (32 max = 16 bytes) into 128-bit vector (zeros in remaining slots). */
-NK_INTERNAL void nk_partial_load_b4x32_serial_(void const *src, nk_b128_vec_t *dst, nk_size_t n) {
-    dst->u64s[0] = 0, dst->u64s[1] = 0;
-    nk_u8_t const *s = (nk_u8_t const *)src;
-    nk_size_t n_bytes = nk_size_divide_round_up_(n, 2);
-    for (nk_size_t i = 0; i < n_bytes && i < 16; i++) dst->u8s[i] = s[i];
-}
-
-/** @brief Partial load for 1-bit elements (128 max = 16 bytes) into 128-bit vector (zeros in remaining slots). */
-NK_INTERNAL void nk_partial_load_b1x128_serial_(void const *src, nk_b128_vec_t *dst, nk_size_t n_bits) {
-    dst->u64s[0] = 0, dst->u64s[1] = 0;
-    nk_u8_t const *s = (nk_u8_t const *)src;
-    nk_size_t n_bytes = nk_size_divide_round_up_(n_bits, 8);
-    for (nk_size_t i = 0; i < n_bytes && i < 16; i++) dst->u8s[i] = s[i];
-}
-
-/** @brief Partial load for 4-bit nibbles (16 max = 8 bytes) into 64-bit vector (zeros in remaining slots). */
-NK_INTERNAL void nk_partial_load_b4x16_serial_(void const *src, nk_b64_vec_t *dst, nk_size_t n) {
-    dst->u64 = 0;
-    nk_u8_t const *s = (nk_u8_t const *)src;
-    nk_size_t n_bytes = nk_size_divide_round_up_(n, 2);
-    for (nk_size_t i = 0; i < n_bytes && i < 8; i++) ((nk_u8_t *)&dst->u64)[i] = s[i];
-}
-
-NK_INTERNAL void nk_partial_load_b64x2_serial_(void const *src, nk_b128_vec_t *dst, nk_size_t n) {
-    dst->u64s[0] = 0, dst->u64s[1] = 0;
-    nk_u64_t const *s = (nk_u64_t const *)src;
-    switch (n) {
-    default:
-    case 2: dst->u64s[1] = s[1]; // fallthrough
-    case 1: dst->u64s[0] = s[0]; // fallthrough
-    case 0: break;
-    }
-}
-
-/** @brief Type-agnostic partial store for 64-bit elements (2 elements max) from 128-bit vector. */
-NK_INTERNAL void nk_partial_store_b64x2_serial_(nk_b128_vec_t const *src, void *dst, nk_size_t n) {
-    nk_u64_t *d = (nk_u64_t *)dst;
-    switch (n) {
-    default:
-    case 2: d[1] = src->u64s[1]; // fallthrough
-    case 1: d[0] = src->u64s[0]; // fallthrough
-    case 0: break;
-    }
-}
-
-/** @brief Strided partial load for 32-bit elements (4 max) into 128-bit vector. */
-NK_INTERNAL void nk_strided_load_b32x4_serial_(void const *src, nk_size_t stride_elements, nk_b128_vec_t *dst,
-                                               nk_size_t n) {
-    dst->u64s[0] = 0, dst->u64s[1] = 0;
-    nk_u32_t const *s = (nk_u32_t const *)src;
-    for (nk_size_t i = 0; i < n && i < 4; ++i) dst->u32s[i] = s[i * stride_elements];
-}
-
-/** @brief Strided partial load for 16-bit elements (8 max) into 128-bit vector. */
-NK_INTERNAL void nk_strided_load_b16x8_serial_(void const *src, nk_size_t stride_elements, nk_b128_vec_t *dst,
-                                               nk_size_t n) {
-    dst->u64s[0] = 0, dst->u64s[1] = 0;
-    nk_u16_t const *s = (nk_u16_t const *)src;
-    for (nk_size_t i = 0; i < n && i < 8; ++i) dst->u16s[i] = s[i * stride_elements];
-}
-
-/** @brief Strided partial load for 8-bit elements (16 max) into 128-bit vector. */
-NK_INTERNAL void nk_strided_load_b8x16_serial_(void const *src, nk_size_t stride_elements, nk_b128_vec_t *dst,
-                                               nk_size_t n) {
-    dst->u64s[0] = 0, dst->u64s[1] = 0;
-    nk_u8_t const *s = (nk_u8_t const *)src;
-    for (nk_size_t i = 0; i < n && i < 16; ++i) dst->u8s[i] = s[i * stride_elements];
+/** @brief Convert a pair of u4 (4-bit unsigned integer, 0 to 15) nibbles into unsigned integers. */
+NK_PUBLIC void nk_u4x2_to_u8x2_serial(nk_u4x2_t const *src, nk_u8_t *dest) {
+    nk_u8_t byte = *(nk_u8_t const *)src;
+    dest[0] = byte >> 4;
+    dest[1] = byte & 0x0F;
 }
 
 /**
@@ -1619,7 +1756,7 @@ NK_INTERNAL void nk_strided_load_b8x16_serial_(void const *src, nk_size_t stride
  *  The caller fills the appropriate union member based on the target dtype,
  *  then passes the union address as `void const *` to kernel functions.
  */
-typedef union nk_scalar_buffer_t {
+typedef union NK_MAY_ALIAS_ nk_scalar_buffer_t {
     nk_u8_t bytes[16];
     nk_f64_t f64;
     nk_f32_t f32;
@@ -1639,115 +1776,78 @@ typedef union nk_scalar_buffer_t {
     nk_u8_t u8;
 } nk_scalar_buffer_t;
 
+/** @brief Reads a typed scalar from @p buf and writes the widened f64c into @p result.
+ *  Real types set `.imag = 0`. Safe when @p result aliases @p buf (in-place conversion).
+ *  @return 1 on success, 0 for unsupported types (sub-byte, unknown). */
+NK_INTERNAL int nk_scalar_buffer_to_f64c(nk_scalar_buffer_t const *buf, nk_dtype_t dtype, nk_f64c_t *result) {
+    // Snapshot input so `result` may alias `buf` (e.g. in-place conversion within a union).
+    nk_scalar_buffer_t local;
+    local.f64c = buf->f64c;
+    result->real = 0, result->imag = 0;
+    switch (dtype) {
+    case nk_f64_k: result->real = local.f64; break;
+    case nk_f32_k: result->real = (nk_f64_t)local.f32; break;
+    case nk_f16_k:
+        nk_f16_to_f32_serial(&local.f16, &local.f32);
+        result->real = (nk_f64_t)local.f32;
+        break;
+    case nk_bf16_k:
+        nk_bf16_to_f32_serial(&local.bf16, &local.f32);
+        result->real = (nk_f64_t)local.f32;
+        break;
+    case nk_f64c_k: result->real = local.f64c.real, result->imag = local.f64c.imag; break;
+    case nk_f32c_k: result->real = (nk_f64_t)local.f32c.real, result->imag = (nk_f64_t)local.f32c.imag; break;
+    case nk_f16c_k:
+        nk_f16_to_f32_serial(&local.f16c.real, &local.f32);
+        result->real = (nk_f64_t)local.f32;
+        nk_f16_to_f32_serial(&local.f16c.imag, &local.f32);
+        result->imag = (nk_f64_t)local.f32;
+        break;
+    case nk_bf16c_k:
+        nk_bf16_to_f32_serial(&local.bf16c.real, &local.f32);
+        result->real = (nk_f64_t)local.f32;
+        nk_bf16_to_f32_serial(&local.bf16c.imag, &local.f32);
+        result->imag = (nk_f64_t)local.f32;
+        break;
+    case nk_i64_k: result->real = (nk_f64_t)local.i64; break;
+    case nk_u64_k: result->real = (nk_f64_t)local.u64; break;
+    case nk_i32_k: result->real = (nk_f64_t)local.i32; break;
+    case nk_u32_k: result->real = (nk_f64_t)local.u32; break;
+    case nk_i16_k: result->real = (nk_f64_t)local.i16; break;
+    case nk_u16_k: result->real = (nk_f64_t)local.u16; break;
+    case nk_i8_k: result->real = (nk_f64_t)local.i8; break;
+    case nk_u8_k: result->real = (nk_f64_t)local.u8; break;
+    case nk_e4m3_k:
+        nk_e4m3_to_f32_serial(&local.u8, &local.f32);
+        result->real = (nk_f64_t)local.f32;
+        break;
+    case nk_e5m2_k:
+        nk_e5m2_to_f32_serial(&local.u8, &local.f32);
+        result->real = (nk_f64_t)local.f32;
+        break;
+    case nk_e2m3_k:
+        nk_e2m3_to_f32_serial(&local.u8, &local.f32);
+        result->real = (nk_f64_t)local.f32;
+        break;
+    case nk_e3m2_k:
+        nk_e3m2_to_f32_serial(&local.u8, &local.f32);
+        result->real = (nk_f64_t)local.f32;
+        break;
+    default: return 0;
+    }
+    return 1;
+}
+
 /**
  *  @brief Converts up to 8x values from `from_ptr` buffer into 8x puned buffer objects
  *  into a complex 64-bit floating point representation.
  */
-NK_INTERNAL void nk_scalar_buffers_fill_f64c_(                         //
+NK_INTERNAL void nk_scalar_buffers_to_f64c_(                           //
     void const *from_ptr, nk_dtype_t from_dtype, nk_size_t from_count, //
     nk_scalar_buffer_t to_buffers[nk_at_least_(8)]) {
 
-    nk_f32_t temporary_f32;
     nk_size_t i;
     switch (from_dtype) {
-    case nk_f64_k: {
-        nk_f64_t const *p = (nk_f64_t const *)from_ptr;
-        for (i = 0; i < from_count; ++i) to_buffers[i].f64c.real = p[i], to_buffers[i].f64c.imag = 0;
-    } break;
-    case nk_f32_k: {
-        nk_f32_t const *p = (nk_f32_t const *)from_ptr;
-        for (i = 0; i < from_count; ++i) to_buffers[i].f64c.real = p[i], to_buffers[i].f64c.imag = 0;
-    } break;
-    case nk_f16_k: {
-        nk_f16_t const *p = (nk_f16_t const *)from_ptr;
-        for (i = 0; i < from_count; ++i)
-            nk_f16_to_f32_serial(&p[i], &temporary_f32), to_buffers[i].f64c.real = temporary_f32,
-                                                         to_buffers[i].f64c.imag = 0;
-    } break;
-    case nk_bf16_k: {
-        nk_bf16_t const *p = (nk_bf16_t const *)from_ptr;
-        for (i = 0; i < from_count; ++i)
-            nk_bf16_to_f32_serial(&p[i], &temporary_f32), to_buffers[i].f64c.real = temporary_f32,
-                                                          to_buffers[i].f64c.imag = 0;
-    } break;
-    case nk_e4m3_k: {
-        nk_u8_t const *p = (nk_u8_t const *)from_ptr;
-        for (i = 0; i < from_count; ++i)
-            nk_e4m3_to_f32_serial(&p[i], &temporary_f32), to_buffers[i].f64c.real = temporary_f32,
-                                                          to_buffers[i].f64c.imag = 0;
-    } break;
-    case nk_e5m2_k: {
-        nk_u8_t const *p = (nk_u8_t const *)from_ptr;
-        for (i = 0; i < from_count; ++i)
-            nk_e5m2_to_f32_serial(&p[i], &temporary_f32), to_buffers[i].f64c.real = temporary_f32,
-                                                          to_buffers[i].f64c.imag = 0;
-    } break;
-    case nk_e2m3_k: {
-        nk_u8_t const *p = (nk_u8_t const *)from_ptr;
-        for (i = 0; i < from_count; ++i)
-            nk_e2m3_to_f32_serial(&p[i], &temporary_f32), to_buffers[i].f64c.real = temporary_f32,
-                                                          to_buffers[i].f64c.imag = 0;
-    } break;
-    case nk_e3m2_k: {
-        nk_u8_t const *p = (nk_u8_t const *)from_ptr;
-        for (i = 0; i < from_count; ++i)
-            nk_e3m2_to_f32_serial(&p[i], &temporary_f32), to_buffers[i].f64c.real = temporary_f32,
-                                                          to_buffers[i].f64c.imag = 0;
-    } break;
-    case nk_i64_k: {
-        nk_i64_t const *p = (nk_i64_t const *)from_ptr;
-        for (i = 0; i < from_count; ++i) to_buffers[i].f64c.real = (nk_f64_t)p[i], to_buffers[i].f64c.imag = 0;
-    } break;
-    case nk_i32_k: {
-        nk_i32_t const *p = (nk_i32_t const *)from_ptr;
-        for (i = 0; i < from_count; ++i) to_buffers[i].f64c.real = p[i], to_buffers[i].f64c.imag = 0;
-    } break;
-    case nk_i16_k: {
-        nk_i16_t const *p = (nk_i16_t const *)from_ptr;
-        for (i = 0; i < from_count; ++i) to_buffers[i].f64c.real = p[i], to_buffers[i].f64c.imag = 0;
-    } break;
-    case nk_i8_k: {
-        nk_i8_t const *p = (nk_i8_t const *)from_ptr;
-        for (i = 0; i < from_count; ++i) to_buffers[i].f64c.real = p[i], to_buffers[i].f64c.imag = 0;
-    } break;
-    case nk_u64_k: {
-        nk_u64_t const *p = (nk_u64_t const *)from_ptr;
-        for (i = 0; i < from_count; ++i) to_buffers[i].f64c.real = (nk_f64_t)p[i], to_buffers[i].f64c.imag = 0;
-    } break;
-    case nk_u32_k: {
-        nk_u32_t const *p = (nk_u32_t const *)from_ptr;
-        for (i = 0; i < from_count; ++i) to_buffers[i].f64c.real = p[i], to_buffers[i].f64c.imag = 0;
-    } break;
-    case nk_u16_k: {
-        nk_u16_t const *p = (nk_u16_t const *)from_ptr;
-        for (i = 0; i < from_count; ++i) to_buffers[i].f64c.real = p[i], to_buffers[i].f64c.imag = 0;
-    } break;
-    case nk_u8_k: {
-        nk_u8_t const *p = (nk_u8_t const *)from_ptr;
-        for (i = 0; i < from_count; ++i) to_buffers[i].f64c.real = p[i], to_buffers[i].f64c.imag = 0;
-    } break;
-    case nk_f64c_k: {
-        nk_f64c_t const *p = (nk_f64c_t const *)from_ptr;
-        for (i = 0; i < from_count; ++i) to_buffers[i].f64c = p[i];
-    } break;
-    case nk_f32c_k: {
-        nk_f32c_t const *p = (nk_f32c_t const *)from_ptr;
-        for (i = 0; i < from_count; ++i) to_buffers[i].f64c.real = p[i].real, to_buffers[i].f64c.imag = p[i].imag;
-    } break;
-    case nk_f16c_k: {
-        nk_f16c_t const *p = (nk_f16c_t const *)from_ptr;
-        for (i = 0; i < from_count; ++i) {
-            nk_f16_to_f32_serial(&p[i].real, &temporary_f32), to_buffers[i].f64c.real = temporary_f32;
-            nk_f16_to_f32_serial(&p[i].imag, &temporary_f32), to_buffers[i].f64c.imag = temporary_f32;
-        }
-    } break;
-    case nk_bf16c_k: {
-        nk_bf16c_t const *p = (nk_bf16c_t const *)from_ptr;
-        for (i = 0; i < from_count; ++i) {
-            nk_bf16_to_f32_serial(&p[i].real, &temporary_f32), to_buffers[i].f64c.real = temporary_f32;
-            nk_bf16_to_f32_serial(&p[i].imag, &temporary_f32), to_buffers[i].f64c.imag = temporary_f32;
-        }
-    } break;
     // Sub-byte: u1 - 8 bits from 1 byte, MSB-first
     case nk_u1_k: {
         nk_u8_t byte = *(nk_u8_t const *)from_ptr;
@@ -1755,130 +1855,117 @@ NK_INTERNAL void nk_scalar_buffers_fill_f64c_(                         //
     } break;
     // Sub-byte: i4 - 8 nibbles from 4 bytes, high nibble = even index, sign-extended
     case nk_i4_k: {
-        nk_u8_t const *p = (nk_u8_t const *)from_ptr;
+        nk_i4x2_t const *pairs = (nk_i4x2_t const *)from_ptr;
+        nk_i8_t unpacked[2];
         for (i = 0; i < 4; ++i) {
-            nk_i8_t hi = (nk_i8_t)(p[i] >> 4), lo = (nk_i8_t)(p[i] & 0xF);
-            to_buffers[i * 2].f64c.real = (hi ^ 8) - 8, to_buffers[i * 2].f64c.imag = 0;
-            to_buffers[i * 2 + 1].f64c.real = (lo ^ 8) - 8, to_buffers[i * 2 + 1].f64c.imag = 0;
+            nk_i4x2_to_i8x2_serial(&pairs[i], unpacked);
+            to_buffers[i * 2].f64c.real = unpacked[0], to_buffers[i * 2].f64c.imag = 0;
+            to_buffers[i * 2 + 1].f64c.real = unpacked[1], to_buffers[i * 2 + 1].f64c.imag = 0;
         }
     } break;
     // Sub-byte: u4 - 8 nibbles from 4 bytes, high nibble = even index
     case nk_u4_k: {
-        nk_u8_t const *p = (nk_u8_t const *)from_ptr;
+        nk_u4x2_t const *pairs = (nk_u4x2_t const *)from_ptr;
+        nk_u8_t unpacked[2];
         for (i = 0; i < 4; ++i) {
-            to_buffers[i * 2].f64c.real = p[i] >> 4, to_buffers[i * 2].f64c.imag = 0;
-            to_buffers[i * 2 + 1].f64c.real = p[i] & 0xF, to_buffers[i * 2 + 1].f64c.imag = 0;
+            nk_u4x2_to_u8x2_serial(&pairs[i], unpacked);
+            to_buffers[i * 2].f64c.real = unpacked[0], to_buffers[i * 2].f64c.imag = 0;
+            to_buffers[i * 2 + 1].f64c.real = unpacked[1], to_buffers[i * 2 + 1].f64c.imag = 0;
         }
     } break;
-    default:
-        for (i = 0; i < 8; ++i) to_buffers[i].f64c.real = 0, to_buffers[i].f64c.imag = 0;
-        break;
+    // All byte-or-larger types: stage through a separate buffer to avoid
+    // variable-length memcpy and type-punned read on the same union —
+    // a pattern that triggers an ICE in MSVC's ARM64 optimizer (C1001).
+    default: {
+        nk_size_t stride = nk_dtype_bits(from_dtype) / NK_BITS_PER_BYTE;
+        nk_scalar_buffer_t staged;
+        for (i = 0; i < from_count; ++i) {
+            staged.u64 = 0;
+            nk_copy_bytes_(&staged, (char const *)from_ptr + i * stride, stride);
+            nk_scalar_buffer_to_f64c(&staged, from_dtype, &to_buffers[i].f64c);
+        }
+    } break;
     }
+}
+
+/** @brief Narrows an f64c @p value into the appropriate typed member of @p buf.
+ *  Real types use only `.real`; complex types use both components.
+ *  Safe when @p value aliases @p buf (in-place conversion).
+ *  @note Integer targets (i64, i32, ...) go through f64 rounding — values beyond 2^53 may lose precision.
+ *  @return 1 on success, 0 for unsupported types (sub-byte, unknown). */
+NK_INTERNAL int nk_scalar_buffer_from_f64c(nk_f64c_t const *value, nk_scalar_buffer_t *buf, nk_dtype_t dtype) {
+    // Snapshot input so `value` may point into `buf` (e.g. in-place conversion within a union).
+    nk_f64c_t local = *value;
+    nk_f32_t temporary_f32;
+    switch (dtype) {
+    case nk_f64_k: buf->f64 = local.real; break;
+    case nk_f32_k: buf->f32 = (nk_f32_t)local.real; break;
+    case nk_f16_k:
+        temporary_f32 = (nk_f32_t)local.real;
+        nk_f32_to_f16_serial(&temporary_f32, &buf->f16);
+        break;
+    case nk_bf16_k:
+        temporary_f32 = (nk_f32_t)local.real;
+        nk_f32_to_bf16_serial(&temporary_f32, &buf->bf16);
+        break;
+    case nk_f64c_k:
+        buf->f64c.real = local.real;
+        buf->f64c.imag = local.imag;
+        break;
+    case nk_f32c_k:
+        buf->f32c.real = (nk_f32_t)local.real;
+        buf->f32c.imag = (nk_f32_t)local.imag;
+        break;
+    case nk_f16c_k:
+        temporary_f32 = (nk_f32_t)local.real;
+        nk_f32_to_f16_serial(&temporary_f32, &buf->f16c.real);
+        temporary_f32 = (nk_f32_t)local.imag;
+        nk_f32_to_f16_serial(&temporary_f32, &buf->f16c.imag);
+        break;
+    case nk_bf16c_k:
+        temporary_f32 = (nk_f32_t)local.real;
+        nk_f32_to_bf16_serial(&temporary_f32, &buf->bf16c.real);
+        temporary_f32 = (nk_f32_t)local.imag;
+        nk_f32_to_bf16_serial(&temporary_f32, &buf->bf16c.imag);
+        break;
+    case nk_i64_k: nk_f64_to_i64_serial(&local.real, &buf->i64); break;
+    case nk_u64_k: nk_f64_to_u64_serial(&local.real, &buf->u64); break;
+    case nk_i32_k: nk_f64_to_i32_serial(&local.real, &buf->i32); break;
+    case nk_u32_k: nk_f64_to_u32_serial(&local.real, &buf->u32); break;
+    case nk_i16_k: nk_f64_to_i16_serial(&local.real, &buf->i16); break;
+    case nk_u16_k: nk_f64_to_u16_serial(&local.real, &buf->u16); break;
+    case nk_i8_k: nk_f64_to_i8_serial(&local.real, &buf->i8); break;
+    case nk_u8_k: nk_f64_to_u8_serial(&local.real, &buf->u8); break;
+    case nk_e4m3_k:
+        temporary_f32 = (nk_f32_t)local.real;
+        nk_f32_to_e4m3_serial(&temporary_f32, &buf->u8);
+        break;
+    case nk_e5m2_k:
+        temporary_f32 = (nk_f32_t)local.real;
+        nk_f32_to_e5m2_serial(&temporary_f32, &buf->u8);
+        break;
+    case nk_e2m3_k:
+        temporary_f32 = (nk_f32_t)local.real;
+        nk_f32_to_e2m3_serial(&temporary_f32, &buf->u8);
+        break;
+    case nk_e3m2_k:
+        temporary_f32 = (nk_f32_t)local.real;
+        nk_f32_to_e3m2_serial(&temporary_f32, &buf->u8);
+        break;
+    default: return 0;
+    }
+    return 1;
 }
 
 /**
  *  @brief Converts up to 8x values from `from_buffers` buffer into 8x typed scalars.
  */
-NK_INTERNAL void nk_scalar_buffers_export_f64c_(            //
+NK_INTERNAL void nk_scalar_buffers_from_f64c_(              //
     nk_scalar_buffer_t const from_buffers[nk_at_least_(8)], //
     void *to_ptr, nk_dtype_t to_dtype, nk_size_t to_count) {
 
-    nk_f32_t temporary_f32;
     nk_size_t i;
     switch (to_dtype) {
-    case nk_f64_k: {
-        nk_f64_t *p = (nk_f64_t *)to_ptr;
-        for (i = 0; i < to_count; ++i) p[i] = from_buffers[i].f64c.real;
-    } break;
-    case nk_f32_k: {
-        nk_f32_t *p = (nk_f32_t *)to_ptr;
-        for (i = 0; i < to_count; ++i) p[i] = (nk_f32_t)from_buffers[i].f64c.real;
-    } break;
-    case nk_f16_k: {
-        nk_f16_t *p = (nk_f16_t *)to_ptr;
-        for (i = 0; i < to_count; ++i)
-            temporary_f32 = (nk_f32_t)from_buffers[i].f64c.real, nk_f32_to_f16_serial(&temporary_f32, &p[i]);
-    } break;
-    case nk_bf16_k: {
-        nk_bf16_t *p = (nk_bf16_t *)to_ptr;
-        for (i = 0; i < to_count; ++i)
-            temporary_f32 = (nk_f32_t)from_buffers[i].f64c.real, nk_f32_to_bf16_serial(&temporary_f32, &p[i]);
-    } break;
-    case nk_e4m3_k: {
-        nk_u8_t *p = (nk_u8_t *)to_ptr;
-        for (i = 0; i < to_count; ++i)
-            temporary_f32 = (nk_f32_t)from_buffers[i].f64c.real, nk_f32_to_e4m3_serial(&temporary_f32, &p[i]);
-    } break;
-    case nk_e5m2_k: {
-        nk_u8_t *p = (nk_u8_t *)to_ptr;
-        for (i = 0; i < to_count; ++i)
-            temporary_f32 = (nk_f32_t)from_buffers[i].f64c.real, nk_f32_to_e5m2_serial(&temporary_f32, &p[i]);
-    } break;
-    case nk_e2m3_k: {
-        nk_u8_t *p = (nk_u8_t *)to_ptr;
-        for (i = 0; i < to_count; ++i)
-            temporary_f32 = (nk_f32_t)from_buffers[i].f64c.real, nk_f32_to_e2m3_serial(&temporary_f32, &p[i]);
-    } break;
-    case nk_e3m2_k: {
-        nk_u8_t *p = (nk_u8_t *)to_ptr;
-        for (i = 0; i < to_count; ++i)
-            temporary_f32 = (nk_f32_t)from_buffers[i].f64c.real, nk_f32_to_e3m2_serial(&temporary_f32, &p[i]);
-    } break;
-    case nk_i64_k: {
-        nk_i64_t *p = (nk_i64_t *)to_ptr;
-        for (i = 0; i < to_count; ++i) nk_f64_to_i64_serial(&from_buffers[i].f64c.real, &p[i]);
-    } break;
-    case nk_i32_k: {
-        nk_i32_t *p = (nk_i32_t *)to_ptr;
-        for (i = 0; i < to_count; ++i) nk_f64_to_i32_serial(&from_buffers[i].f64c.real, &p[i]);
-    } break;
-    case nk_i16_k: {
-        nk_i16_t *p = (nk_i16_t *)to_ptr;
-        for (i = 0; i < to_count; ++i) nk_f64_to_i16_serial(&from_buffers[i].f64c.real, &p[i]);
-    } break;
-    case nk_i8_k: {
-        nk_i8_t *p = (nk_i8_t *)to_ptr;
-        for (i = 0; i < to_count; ++i) nk_f64_to_i8_serial(&from_buffers[i].f64c.real, &p[i]);
-    } break;
-    case nk_u64_k: {
-        nk_u64_t *p = (nk_u64_t *)to_ptr;
-        for (i = 0; i < to_count; ++i) nk_f64_to_u64_serial(&from_buffers[i].f64c.real, &p[i]);
-    } break;
-    case nk_u32_k: {
-        nk_u32_t *p = (nk_u32_t *)to_ptr;
-        for (i = 0; i < to_count; ++i) nk_f64_to_u32_serial(&from_buffers[i].f64c.real, &p[i]);
-    } break;
-    case nk_u16_k: {
-        nk_u16_t *p = (nk_u16_t *)to_ptr;
-        for (i = 0; i < to_count; ++i) nk_f64_to_u16_serial(&from_buffers[i].f64c.real, &p[i]);
-    } break;
-    case nk_u8_k: {
-        nk_u8_t *p = (nk_u8_t *)to_ptr;
-        for (i = 0; i < to_count; ++i) nk_f64_to_u8_serial(&from_buffers[i].f64c.real, &p[i]);
-    } break;
-    case nk_f64c_k: {
-        nk_f64c_t *p = (nk_f64c_t *)to_ptr;
-        for (i = 0; i < to_count; ++i) p[i] = from_buffers[i].f64c;
-    } break;
-    case nk_f32c_k: {
-        nk_f32c_t *p = (nk_f32c_t *)to_ptr;
-        for (i = 0; i < to_count; ++i)
-            p[i].real = (nk_f32_t)from_buffers[i].f64c.real, p[i].imag = (nk_f32_t)from_buffers[i].f64c.imag;
-    } break;
-    case nk_f16c_k: {
-        nk_f16c_t *p = (nk_f16c_t *)to_ptr;
-        for (i = 0; i < to_count; ++i) {
-            temporary_f32 = (nk_f32_t)from_buffers[i].f64c.real, nk_f32_to_f16_serial(&temporary_f32, &p[i].real);
-            temporary_f32 = (nk_f32_t)from_buffers[i].f64c.imag, nk_f32_to_f16_serial(&temporary_f32, &p[i].imag);
-        }
-    } break;
-    case nk_bf16c_k: {
-        nk_bf16c_t *p = (nk_bf16c_t *)to_ptr;
-        for (i = 0; i < to_count; ++i) {
-            temporary_f32 = (nk_f32_t)from_buffers[i].f64c.real, nk_f32_to_bf16_serial(&temporary_f32, &p[i].real);
-            temporary_f32 = (nk_f32_t)from_buffers[i].f64c.imag, nk_f32_to_bf16_serial(&temporary_f32, &p[i].imag);
-        }
-    } break;
     // Sub-byte: u1 - 8 bits to 1 byte, MSB-first, non-zero → 1
     case nk_u1_k: {
         nk_u8_t *p = (nk_u8_t *)to_ptr;
@@ -1890,32 +1977,38 @@ NK_INTERNAL void nk_scalar_buffers_export_f64c_(            //
     case nk_i4_k: {
         nk_u8_t *p = (nk_u8_t *)to_ptr;
         for (i = 0; i < 4; ++i) {
-            nk_i64_t hi = (nk_i64_t)from_buffers[i * 2].f64c.real;
-            nk_i64_t lo = (nk_i64_t)from_buffers[i * 2 + 1].f64c.real;
-            hi = hi > 7 ? 7 : (hi < -8 ? -8 : hi);
-            lo = lo > 7 ? 7 : (lo < -8 ? -8 : lo);
-            p[i] = (nk_u8_t)(((hi & 0xF) << 4) | (lo & 0xF));
+            nk_f64_t high = from_buffers[i * 2].f64c.real, low = from_buffers[i * 2 + 1].f64c.real;
+            high = high > 7 ? 7 : (high < -8 ? -8 : high);
+            low = low > 7 ? 7 : (low < -8 ? -8 : low);
+            p[i] = (nk_u8_t)((((nk_i8_t)high & 0x0F) << 4) | ((nk_i8_t)low & 0x0F));
         }
     } break;
     // Sub-byte: u4 - 8 nibbles to 4 bytes, high nibble = even index
     case nk_u4_k: {
         nk_u8_t *p = (nk_u8_t *)to_ptr;
         for (i = 0; i < 4; ++i) {
-            nk_u64_t hi = (nk_u64_t)from_buffers[i * 2].f64c.real;
-            nk_u64_t lo = (nk_u64_t)from_buffers[i * 2 + 1].f64c.real;
-            hi = hi > 15 ? 15 : hi;
-            lo = lo > 15 ? 15 : lo;
-            p[i] = (nk_u8_t)((hi << 4) | lo);
+            nk_f64_t high = from_buffers[i * 2].f64c.real, low = from_buffers[i * 2 + 1].f64c.real;
+            high = high > 15 ? 15 : (high < 0 ? 0 : high);
+            low = low > 15 ? 15 : (low < 0 ? 0 : low);
+            p[i] = (nk_u8_t)(((nk_u8_t)high << 4) | (nk_u8_t)low);
         }
     } break;
-    default: break;
+    // All byte-or-larger types: convert, then store relevant bytes
+    default: {
+        nk_size_t stride = nk_dtype_bits(to_dtype) / NK_BITS_PER_BYTE;
+        nk_scalar_buffer_t tmp;
+        for (i = 0; i < to_count; ++i) {
+            nk_scalar_buffer_from_f64c(&from_buffers[i].f64c, &tmp, to_dtype);
+            nk_copy_bytes_((char *)to_ptr + i * stride, &tmp, stride);
+        }
+    } break;
     }
 }
 
 /**
  *  @brief Load 8 values from typed buffer into `buf[i].i64` (lossless widening for signed integers).
  */
-NK_INTERNAL void nk_scalar_buffers_fill_i64_(                          //
+NK_INTERNAL void nk_scalar_buffers_to_i64_(                            //
     void const *from_ptr, nk_dtype_t from_dtype, nk_size_t from_count, //
     nk_scalar_buffer_t to_buffers[nk_at_least_(8)]) {                  //
     nk_size_t i;
@@ -1938,11 +2031,12 @@ NK_INTERNAL void nk_scalar_buffers_fill_i64_(                          //
     } break;
     // Sub-byte: i4 - 4 bytes to 8 nibbles, sign-extend each nibble
     case nk_i4_k: {
-        nk_u8_t const *p = (nk_u8_t const *)from_ptr;
+        nk_i4x2_t const *pairs = (nk_i4x2_t const *)from_ptr;
         for (i = 0; i < 4; ++i) {
-            nk_i8_t hi = (nk_i8_t)(p[i] >> 4), lo = (nk_i8_t)(p[i] & 0xF);
-            to_buffers[i * 2].i64 = (hi ^ 8) - 8;
-            to_buffers[i * 2 + 1].i64 = (lo ^ 8) - 8;
+            nk_i8_t unpacked[2];
+            nk_i4x2_to_i8x2_serial(&pairs[i], unpacked);
+            to_buffers[i * 2].i64 = unpacked[0];
+            to_buffers[i * 2 + 1].i64 = unpacked[1];
         }
     } break;
     case nk_u64_k: {
@@ -1974,8 +2068,9 @@ NK_INTERNAL void nk_scalar_buffers_fill_i64_(                          //
 
 /**
  *  @brief Export 8 `buf[i].i64` values to typed buffer with saturation on downcast.
+ *  @note Only handles integer and sub-byte targets. Float/complex targets are silently skipped.
  */
-NK_INTERNAL void nk_scalar_buffers_export_i64_(              //
+NK_INTERNAL void nk_scalar_buffers_from_i64_(                //
     nk_scalar_buffer_t const from_buffers[nk_at_least_(8)],  //
     void *to_ptr, nk_dtype_t to_dtype, nk_size_t to_count) { //
     nk_size_t i;
@@ -2015,12 +2110,12 @@ NK_INTERNAL void nk_scalar_buffers_export_i64_(              //
     } break;
     // Sub-byte: i4 - 8 nibbles to 4 bytes, clamp [-8,7]
     case nk_i4_k: {
-        nk_u8_t *p = (nk_u8_t *)to_ptr;
+        nk_i4x2_t *p = (nk_i4x2_t *)to_ptr;
         for (i = 0; i < 4; ++i) {
-            nk_i64_t hi = from_buffers[i * 2].i64, lo = from_buffers[i * 2 + 1].i64;
-            hi = hi > 7 ? 7 : (hi < -8 ? -8 : hi);
-            lo = lo > 7 ? 7 : (lo < -8 ? -8 : lo);
-            p[i] = (nk_u8_t)(((hi & 0xF) << 4) | (lo & 0xF));
+            nk_i64_t high = from_buffers[i * 2].i64, low = from_buffers[i * 2 + 1].i64;
+            high = high > 7 ? 7 : (high < -8 ? -8 : high);
+            low = low > 7 ? 7 : (low < -8 ? -8 : low);
+            p[i] = (nk_u8_t)(((high & 0xF) << 4) | (low & 0xF));
         }
     } break;
     default: break;
@@ -2030,7 +2125,7 @@ NK_INTERNAL void nk_scalar_buffers_export_i64_(              //
 /**
  *  @brief Load 8 values from typed buffer into `buf[i].u64` (lossless widening for unsigned integers).
  */
-NK_INTERNAL void nk_scalar_buffers_fill_u64_(                          //
+NK_INTERNAL void nk_scalar_buffers_to_u64_(                            //
     void const *from_ptr, nk_dtype_t from_dtype, nk_size_t from_count, //
     nk_scalar_buffer_t to_buffers[nk_at_least_(8)]) {                  //
     nk_size_t i;
@@ -2053,10 +2148,12 @@ NK_INTERNAL void nk_scalar_buffers_fill_u64_(                          //
     } break;
     // Sub-byte: u4 - 4 bytes to 8 nibbles, zero-extend
     case nk_u4_k: {
-        nk_u8_t const *p = (nk_u8_t const *)from_ptr;
+        nk_u4x2_t const *pairs = (nk_u4x2_t const *)from_ptr;
         for (i = 0; i < 4; ++i) {
-            to_buffers[i * 2].u64 = p[i] >> 4;
-            to_buffers[i * 2 + 1].u64 = p[i] & 0xF;
+            nk_u8_t unpacked[2];
+            nk_u4x2_to_u8x2_serial(&pairs[i], unpacked);
+            to_buffers[i * 2].u64 = unpacked[0];
+            to_buffers[i * 2 + 1].u64 = unpacked[1];
         }
     } break;
     // Sub-byte: u1 - 1 byte to 8 bits, MSB-first
@@ -2070,8 +2167,9 @@ NK_INTERNAL void nk_scalar_buffers_fill_u64_(                          //
 
 /**
  *  @brief Export 8 `buf[i].u64` values to typed buffer with saturation on downcast.
+ *  @note Only handles integer and sub-byte targets. Float/complex targets are silently skipped.
  */
-NK_INTERNAL void nk_scalar_buffers_export_u64_(              //
+NK_INTERNAL void nk_scalar_buffers_from_u64_(                //
     nk_scalar_buffer_t const from_buffers[nk_at_least_(8)],  //
     void *to_ptr, nk_dtype_t to_dtype, nk_size_t to_count) { //
     nk_size_t i;
@@ -2111,12 +2209,12 @@ NK_INTERNAL void nk_scalar_buffers_export_u64_(              //
     } break;
     // Sub-byte: u4 - 8 nibbles to 4 bytes, clamp [0,15]
     case nk_u4_k: {
-        nk_u8_t *p = (nk_u8_t *)to_ptr;
+        nk_u4x2_t *p = (nk_u4x2_t *)to_ptr;
         for (i = 0; i < 4; ++i) {
-            nk_u64_t hi = from_buffers[i * 2].u64, lo = from_buffers[i * 2 + 1].u64;
-            hi = hi > 15 ? 15 : hi;
-            lo = lo > 15 ? 15 : lo;
-            p[i] = (nk_u8_t)((hi << 4) | lo);
+            nk_u64_t high = from_buffers[i * 2].u64, low = from_buffers[i * 2 + 1].u64;
+            high = high > 15 ? 15 : high;
+            low = low > 15 ? 15 : low;
+            p[i] = (nk_u8_t)((high << 4) | low);
         }
     } break;
     // Sub-byte: u1 - 8 bits to 1 byte, MSB-first, non-zero becomes 1
@@ -2130,9 +2228,24 @@ NK_INTERNAL void nk_scalar_buffers_export_u64_(              //
     }
 }
 
-#pragma endregion - Type Punned Loads and Stores
+/** @brief Widens a typed scalar from @p buf into @p result as f64 (discards imaginary part).
+ *  Safe when @p result aliases @p buf (in-place conversion). */
+NK_INTERNAL int nk_scalar_buffer_to_f64(nk_scalar_buffer_t const *buf, nk_dtype_t dtype, nk_f64_t *result) {
+    nk_f64c_t temporary_f64c;
+    int ok = nk_scalar_buffer_to_f64c(buf, dtype, &temporary_f64c);
+    *result = temporary_f64c.real;
+    return ok;
+}
 
-#pragma region - Public API
+/** @brief Narrows an f64 @p value into the appropriate typed member of @p buf.
+ *  Safe when @p value aliases @p buf (in-place: `buf->f64 = x; from_f64(&buf->f64, buf, dtype)`).
+ *  @note Integer targets go through f64 rounding — values beyond 2^53 may lose precision. */
+NK_INTERNAL int nk_scalar_buffer_from_f64(nk_f64_t const *value, nk_scalar_buffer_t *buf, nk_dtype_t dtype) {
+    nk_f64c_t temporary_f64c = {*value, 0};
+    return nk_scalar_buffer_from_f64c(&temporary_f64c, buf, dtype);
+}
+
+#pragma region Public API
 
 NK_PUBLIC void nk_cast_serial(void const *from, nk_dtype_t from_type, nk_size_t n, void *to, nk_dtype_t to_type) {
     if (from_type == to_type) {
@@ -2162,12 +2275,12 @@ NK_PUBLIC void nk_cast_serial(void const *from, nk_dtype_t from_type, nk_size_t 
     // Both unsigned: u64 hub
     if (from_family == nk_dtype_family_uint_k && to_family == nk_dtype_family_uint_k) {
         for (nk_size_t b = 0; b < batches; ++b, src += from_step, dst += to_step) {
-            nk_scalar_buffers_fill_u64_(src, from_type, NK_BITS_PER_BYTE, bufs);
-            nk_scalar_buffers_export_u64_(bufs, dst, to_type, NK_BITS_PER_BYTE);
+            nk_scalar_buffers_to_u64_(src, from_type, NK_BITS_PER_BYTE, bufs);
+            nk_scalar_buffers_from_u64_(bufs, dst, to_type, NK_BITS_PER_BYTE);
         }
         if (tail) {
-            nk_scalar_buffers_fill_u64_(src, from_type, tail, bufs);
-            nk_scalar_buffers_export_u64_(bufs, dst, to_type, tail);
+            nk_scalar_buffers_to_u64_(src, from_type, tail, bufs);
+            nk_scalar_buffers_from_u64_(bufs, dst, to_type, tail);
         }
         return;
     }
@@ -2176,24 +2289,24 @@ NK_PUBLIC void nk_cast_serial(void const *from, nk_dtype_t from_type, nk_size_t 
     if ((from_family == nk_dtype_family_int_k || from_family == nk_dtype_family_uint_k) &&
         (to_family == nk_dtype_family_int_k || to_family == nk_dtype_family_uint_k)) {
         for (nk_size_t b = 0; b < batches; ++b, src += from_step, dst += to_step) {
-            nk_scalar_buffers_fill_i64_(src, from_type, NK_BITS_PER_BYTE, bufs);
-            nk_scalar_buffers_export_i64_(bufs, dst, to_type, NK_BITS_PER_BYTE);
+            nk_scalar_buffers_to_i64_(src, from_type, NK_BITS_PER_BYTE, bufs);
+            nk_scalar_buffers_from_i64_(bufs, dst, to_type, NK_BITS_PER_BYTE);
         }
         if (tail) {
-            nk_scalar_buffers_fill_i64_(src, from_type, tail, bufs);
-            nk_scalar_buffers_export_i64_(bufs, dst, to_type, tail);
+            nk_scalar_buffers_to_i64_(src, from_type, tail, bufs);
+            nk_scalar_buffers_from_i64_(bufs, dst, to_type, tail);
         }
         return;
     }
 
     // Everything else: f64c hub (floats, complex, cross-category)
     for (nk_size_t b = 0; b < batches; ++b, src += from_step, dst += to_step) {
-        nk_scalar_buffers_fill_f64c_(src, from_type, NK_BITS_PER_BYTE, bufs);
-        nk_scalar_buffers_export_f64c_(bufs, dst, to_type, NK_BITS_PER_BYTE);
+        nk_scalar_buffers_to_f64c_(src, from_type, NK_BITS_PER_BYTE, bufs);
+        nk_scalar_buffers_from_f64c_(bufs, dst, to_type, NK_BITS_PER_BYTE);
     }
     if (tail) {
-        nk_scalar_buffers_fill_f64c_(src, from_type, tail, bufs);
-        nk_scalar_buffers_export_f64c_(bufs, dst, to_type, tail);
+        nk_scalar_buffers_to_f64c_(src, from_type, tail, bufs);
+        nk_scalar_buffers_from_f64c_(bufs, dst, to_type, tail);
     }
 }
 
@@ -2225,35 +2338,13 @@ NK_PUBLIC void nk_e3m2_to_bf16(nk_e3m2_t const *src, nk_bf16_t *dest) {
     nk_f32_to_bf16_serial(&temp, dest);
 }
 
-/**
- *  @brief Convert i4 (4-bit signed integer, -8 to 7) to i8.
- *
- *  Nibbles are packed: low nibble in bits [0:3], high nibble in bits [4:7].
- *  Sign extension: XOR with 8 then subtract 8 converts unsigned nibble to signed.
- */
-NK_PUBLIC void nk_i4_to_i8_serial_(nk_i4x2_t const *src, nk_i8_t *dest, nk_size_t count) {
-    nk_u8_t const *bytes = (nk_u8_t const *)src;
-    for (nk_size_t i = 0; i < count; ++i) {
-        nk_u8_t byte = bytes[i / 2];
-        nk_u8_t nibble = (i % 2 == 0) ? (byte & 0x0F) : (byte >> 4);
-        dest[i] = (nk_i8_t)((nibble ^ 8) - 8); // Sign extend: 0-7 → 0-7, 8-15 → -8 to -1
-    }
-}
+#pragma endregion Public API
 
-/**
- *  @brief Convert u4 (4-bit unsigned integer, 0 to 15) to u8.
- *
- *  Nibbles are packed: low nibble in bits [0:3], high nibble in bits [4:7].
- */
-NK_PUBLIC void nk_u4_to_u8_serial_(nk_u4x2_t const *src, nk_u8_t *dest, nk_size_t count) {
-    nk_u8_t const *bytes = (nk_u8_t const *)src;
-    for (nk_size_t i = 0; i < count; ++i) {
-        nk_u8_t byte = bytes[i / 2];
-        dest[i] = (i % 2 == 0) ? (byte & 0x0F) : (byte >> 4);
-    }
-}
-
-#pragma endregion - Public API
+#if defined(__clang__)
+#pragma clang attribute pop
+#elif defined(__GNUC__)
+#pragma GCC pop_options
+#endif
 
 #if defined(__cplusplus)
 } // extern "C"

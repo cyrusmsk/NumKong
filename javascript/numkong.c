@@ -9,9 +9,16 @@
 
 #include <string.h> // `strcmp` function
 
+#if defined(NK_USE_OPENMP)
+#include <omp.h>
+#endif
+
 #include <node_api.h> // `napi_*` functions — N-API v6+ for BigInt (Node ≥ 10.20)
 
 #include <numkong/numkong.h> // `nk_*` functions — must be first to bring `_GNU_SOURCE`
+
+#define NK_PARALLEL_PACKED_TILE    64
+#define NK_PARALLEL_SYMMETRIC_TILE 32
 
 /** @brief Global variable that caches the CPU capabilities, and is computed just once, when the module is loaded. */
 nk_capability_t static_capabilities = nk_cap_serial_k;
@@ -65,7 +72,7 @@ static int is_compatible_napi_type(napi_typedarray_type napi_type, nk_dtype_t dt
  *  @param out_dtype The dtype of the value stored in the buffer.
  *  @return napi_value containing the result as a JavaScript Number, or NULL on error.
  */
-static napi_value scalar_to_js_number(napi_env env, nk_scalar_buffer_t const *result, nk_dtype_t out_dtype) {
+static napi_value nk_scalar_buffer_to_js_number(napi_env env, nk_scalar_buffer_t const *result, nk_dtype_t out_dtype) {
     // i64/u64 must return BigInt since they may exceed Number.MAX_SAFE_INTEGER
     if (out_dtype == nk_i64_k) {
         napi_value js_result;
@@ -77,30 +84,9 @@ static napi_value scalar_to_js_number(napi_env env, nk_scalar_buffer_t const *re
         if (napi_create_bigint_uint64(env, result->u64, &js_result) != napi_ok) return NULL;
         return js_result;
     }
-    double result_f64;
-    switch (out_dtype) {
-    case nk_f64_k: result_f64 = (double)result->f64; break;
-    case nk_f32_k: result_f64 = (double)result->f32; break;
-    case nk_f16_k: {
-        nk_f32_t t;
-        nk_f16_to_f32(&result->f16, &t);
-        result_f64 = (double)t;
-        break;
-    }
-    case nk_bf16_k: {
-        nk_f32_t t;
-        nk_bf16_to_f32(&result->bf16, &t);
-        result_f64 = (double)t;
-        break;
-    }
-    case nk_i8_k: result_f64 = (double)result->i8; break;
-    case nk_u8_k: result_f64 = (double)result->u8; break;
-    case nk_i16_k: result_f64 = (double)result->i16; break;
-    case nk_u16_k: result_f64 = (double)result->u16; break;
-    case nk_i32_k: result_f64 = (double)result->i32; break;
-    case nk_u32_k: result_f64 = (double)result->u32; break;
-    default: napi_throw_error(env, NULL, "Unexpected output dtype in result conversion"); return NULL;
-    }
+    nk_f64c_t result_c;
+    nk_scalar_buffer_to_f64c(result, out_dtype, &result_c);
+    double result_f64 = result_c.real;
     napi_value js_result;
     if (napi_create_double(env, result_f64, &js_result) != napi_ok) return NULL;
     return js_result;
@@ -173,9 +159,10 @@ static napi_value dense(napi_env env, napi_callback_info info, nk_kernel_kind_t 
             // Auto-detect from N-API TypedArray type (backward-compatible 4-type whitelist)
             if (type_a != napi_float64_array && type_a != napi_float32_array && type_a != napi_int8_array &&
                 type_a != napi_uint8_array) {
-                napi_throw_error(
+                napi_throw_error( //
                     env, NULL,
-                    "Only f64, f32, i8, u8 arrays are auto-detected; pass dtype string as 3rd argument " "for other " "types");
+                    "Only f64, f32, i8, u8 arrays are auto-detected; " //
+                    "pass dtype string as 3rd argument for other types");
                 return NULL;
             }
             switch (type_a) {
@@ -209,7 +196,7 @@ static napi_value dense(napi_env env, napi_callback_info info, nk_kernel_kind_t 
     nk_scalar_buffer_t result;
     metric(data_a, data_b, dimensions, &result);
 
-    return scalar_to_js_number(env, &result, out_dtype);
+    return nk_scalar_buffer_to_js_number(env, &result, out_dtype);
 }
 
 /** @brief N-API entry for inner product (dot).  */
@@ -503,11 +490,11 @@ static napi_value api_dots_pack(napi_env env, napi_callback_info info) {
  * dtype
  */
 static napi_value api_packed_common(napi_env env, napi_callback_info info, nk_kernel_kind_t kernel_kind) {
-    size_t argc = 9;
-    napi_value args[9];
+    size_t argc = 10;
+    napi_value args[10];
     napi_get_cb_info(env, info, &argc, args, NULL, NULL);
-    if (argc != 9) {
-        napi_throw_error(env, NULL, "Packed operation requires 9 arguments");
+    if (argc < 9 || argc > 10) {
+        napi_throw_error(env, NULL, "Packed operation requires 9-10 arguments (last is optional threads)");
         return NULL;
     }
 
@@ -554,8 +541,26 @@ static napi_value api_packed_common(napi_env env, napi_callback_info info, nk_ke
         return NULL;
     }
 
-    kernel(a_data, packed_data, result_data, (nk_size_t)height, (nk_size_t)width, (nk_size_t)depth, (nk_size_t)a_stride,
-           (nk_size_t)result_stride);
+    uint32_t threads = 1;
+    if (argc == 10) napi_get_value_uint32(env, args[9], &threads);
+
+#if defined(NK_USE_OPENMP)
+    if (threads == 0) threads = (uint32_t)omp_get_max_threads();
+    omp_set_num_threads((int)threads);
+#endif
+
+    // `int` loop counter pre-declared: MSVC's OpenMP stays at 2.0 canonical
+    // form, which forbids in-init declarations and rejects 64-bit iterators
+    // — either would trip C3015.
+    int const tile_count = (int)nk_size_divide_round_up_(height, NK_PARALLEL_PACKED_TILE);
+    int tile_idx;
+#pragma omp parallel for schedule(dynamic, 1) if (threads > 1)
+    for (tile_idx = 0; tile_idx < tile_count; tile_idx++) {
+        nk_size_t row = (nk_size_t)tile_idx * NK_PARALLEL_PACKED_TILE;
+        nk_size_t chunk = (row + NK_PARALLEL_PACKED_TILE <= height) ? NK_PARALLEL_PACKED_TILE : (height - row);
+        kernel((char const *)a_data + row * a_stride, packed_data, (char *)result_data + row * result_stride, chunk,
+               (nk_size_t)width, (nk_size_t)depth, (nk_size_t)a_stride, (nk_size_t)result_stride);
+    }
     return NULL;
 }
 
@@ -575,11 +580,11 @@ static napi_value api_euclideans_packed(napi_env env, napi_callback_info info) {
  * string dtype
  */
 static napi_value api_symmetric_common(napi_env env, napi_callback_info info, nk_kernel_kind_t kernel_kind) {
-    size_t argc = 9;
-    napi_value args[9];
+    size_t argc = 10;
+    napi_value args[10];
     napi_get_cb_info(env, info, &argc, args, NULL, NULL);
-    if (argc != 9) {
-        napi_throw_error(env, NULL, "Symmetric operation requires 9 arguments");
+    if (argc < 9 || argc > 10) {
+        napi_throw_error(env, NULL, "Symmetric operation requires 9-10 arguments (last is optional threads)");
         return NULL;
     }
 
@@ -622,8 +627,27 @@ static napi_value api_symmetric_common(napi_env env, napi_callback_info info, nk
         return NULL;
     }
 
-    kernel(vectors_data, (nk_size_t)n_vectors, (nk_size_t)depth, (nk_size_t)vectors_stride, result_data,
-           (nk_size_t)result_stride, (nk_size_t)row_start, (nk_size_t)row_count);
+    uint32_t threads = 1;
+    if (argc == 10) napi_get_value_uint32(env, args[9], &threads);
+
+#if defined(NK_USE_OPENMP)
+    if (threads == 0) threads = (uint32_t)omp_get_max_threads();
+    omp_set_num_threads((int)threads);
+#endif
+
+    // `int` loop counter pre-declared: see note at `api_packed_common`.
+    int const tile_count = (int)nk_size_divide_round_up_(row_count, NK_PARALLEL_SYMMETRIC_TILE);
+    int tile_idx;
+#pragma omp parallel for schedule(dynamic, 1) if (threads > 1)
+    for (tile_idx = 0; tile_idx < tile_count; tile_idx++) {
+        nk_size_t tile_start = (nk_size_t)row_start + (nk_size_t)tile_idx * NK_PARALLEL_SYMMETRIC_TILE;
+        nk_size_t tile_rows = (tile_start + NK_PARALLEL_SYMMETRIC_TILE <= (nk_size_t)row_start + row_count)
+                                  ? NK_PARALLEL_SYMMETRIC_TILE
+                                  : ((nk_size_t)row_start + row_count - tile_start);
+        kernel(vectors_data, (nk_size_t)n_vectors, (nk_size_t)depth, (nk_size_t)vectors_stride, result_data,
+               (nk_size_t)result_stride, tile_start, tile_rows);
+    }
+
     return NULL;
 }
 

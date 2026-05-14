@@ -42,7 +42,7 @@
 //! let angular_dist = f32::angular(a, b);
 //! let l2sq_dist = f32::sqeuclidean(a, b);
 //!
-//! // Optimize performance by flushing denormals
+//! // Enable AMX and other platform-specific SIMD features
 //! numkong::capabilities::configure_thread();
 //! ```
 //!
@@ -169,10 +169,10 @@ pub use capabilities::{available, configure_thread, uses_dynamic_dispatch};
 pub use tensor::{
     AllCloseOps, Allocator, AxisIterator, AxisIteratorMut, BlendOps, CastOps, FmaOps, Global,
     Matrix, MatrixSpan, MatrixView, MinMaxOps, MinMaxResult, MomentsOps, RangeStep, ScaleOps,
-    SliceArg, SliceRange, SliceSpec, SumOps, Tensor, TensorDims, TensorError,
-    TensorIterator, TensorMut, TensorRef, TensorSpan, TensorSpanDims, TensorSpanIterator,
-    TensorView, TensorViewDims, TensorViewIterator, TrigAtanOps, TrigCosOps, TrigSinOps,
-    DEFAULT_MAX_RANK, SIMD_ALIGNMENT,
+    SliceArg, SliceRange, SliceSpec, SumOps, Tensor, TensorDims, TensorError, TensorIterator,
+    TensorMut, TensorRef, TensorSpan, TensorSpanDims, TensorSpanIterator, TensorView,
+    TensorViewDims, TensorViewIterator, TrigAtanOps, TrigCosOps, TrigSinOps, DEFAULT_MAX_RANK,
+    SIMD_ALIGNMENT,
 };
 
 // Re-export matrix types

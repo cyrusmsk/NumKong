@@ -389,6 +389,8 @@ NK_PUBLIC void nk_reduce_moments_i16_neon(nk_i16_t const *, nk_size_t, nk_size_t
 /** @copydoc nk_reduce_moments_f64 */
 NK_PUBLIC void nk_reduce_moments_u16_neon(nk_u16_t const *, nk_size_t, nk_size_t, nk_u64_t *, nk_u64_t *);
 /** @copydoc nk_reduce_moments_f64 */
+NK_PUBLIC void nk_reduce_moments_u1_neon(nk_u1x8_t const *, nk_size_t, nk_size_t, nk_u64_t *, nk_u64_t *);
+/** @copydoc nk_reduce_moments_f64 */
 NK_PUBLIC void nk_reduce_moments_i32_neon(nk_i32_t const *, nk_size_t, nk_size_t, nk_i64_t *, nk_u64_t *);
 /** @copydoc nk_reduce_moments_f64 */
 NK_PUBLIC void nk_reduce_moments_u32_neon(nk_u32_t const *, nk_size_t, nk_size_t, nk_u64_t *, nk_u64_t *);
@@ -446,12 +448,9 @@ NK_PUBLIC void nk_reduce_minmax_e4m3_neon(nk_e4m3_t const *, nk_size_t, nk_size_
 /** @copydoc nk_reduce_minmax_f64 */
 NK_PUBLIC void nk_reduce_minmax_e5m2_neon(nk_e5m2_t const *, nk_size_t, nk_size_t, nk_e5m2_t *, nk_size_t *,
                                           nk_e5m2_t *, nk_size_t *);
-#endif // NK_TARGET_NEON
-
-#if NK_TARGET_NEONHALF
 /** @copydoc nk_reduce_moments_f64 */
-NK_PUBLIC void nk_reduce_moments_f16_neonhalf(nk_f16_t const *, nk_size_t, nk_size_t, nk_f32_t *, nk_f32_t *);
-#endif // NK_TARGET_NEONHALF
+NK_PUBLIC void nk_reduce_moments_f16_neon(nk_f16_t const *, nk_size_t, nk_size_t, nk_f32_t *, nk_f32_t *);
+#endif // NK_TARGET_NEON
 
 #if NK_TARGET_NEONBFDOT
 /** @copydoc nk_reduce_moments_f64 */
@@ -941,7 +940,6 @@ NK_INTERNAL nk_dtype_t nk_reduce_minmax_value_dtype(nk_dtype_t dtype) {
 
 #include "numkong/reduce/serial.h"
 #include "numkong/reduce/neon.h"
-#include "numkong/reduce/neonhalf.h"
 #include "numkong/reduce/neonbfdot.h"
 #include "numkong/reduce/neonsdot.h"
 #include "numkong/reduce/neonfhm.h"
@@ -1315,8 +1313,8 @@ NK_PUBLIC void nk_reduce_moments_f16(nk_f16_t const *d, nk_size_t n, nk_size_t s
     nk_reduce_moments_f16_skylake(d, n, s, sum, sumsq);
 #elif NK_TARGET_HASWELL
     nk_reduce_moments_f16_haswell(d, n, s, sum, sumsq);
-#elif NK_TARGET_NEONHALF
-    nk_reduce_moments_f16_neonhalf(d, n, s, sum, sumsq);
+#elif NK_TARGET_NEON
+    nk_reduce_moments_f16_neon(d, n, s, sum, sumsq);
 #elif NK_TARGET_RVV
     nk_reduce_moments_f16_rvv(d, n, s, sum, sumsq);
 #elif NK_TARGET_V128RELAXED
@@ -1563,6 +1561,8 @@ NK_PUBLIC void nk_reduce_moments_u1(nk_u1x8_t const *d, nk_size_t n, nk_size_t s
     nk_reduce_moments_u1_skylake(d, n, s, sum, sumsq);
 #elif NK_TARGET_HASWELL
     nk_reduce_moments_u1_haswell(d, n, s, sum, sumsq);
+#elif NK_TARGET_NEON
+    nk_reduce_moments_u1_neon(d, n, s, sum, sumsq);
 #else
     nk_reduce_moments_u1_serial(d, n, s, sum, sumsq);
 #endif

@@ -26,18 +26,43 @@
  */
 
 import build from "node-gyp-build";
+import { createRequire } from "node:module";
 import * as path from "node:path";
 import { existsSync } from "node:fs";
 import { getFileName, getRoot } from "bindings";
 import { setConversionFunctions, Float16Array, BFloat16Array, E4M3Array, E5M2Array, BinaryArray, TensorBase, VectorBase, VectorView, Vector, MatrixBase, Matrix, PackedMatrix, DType, dtypeToString, outputDtype, KernelFamily } from "./types.js";
 
-let compiled: any;
+function loadNativeAddon(): any {
+  // Duplicate-libomp guard. We ship our own `libomp.dylib` next to
+  // `numkong.node` in each `@numkong/darwin-*` package, but another OpenMP
+  // runtime (e.g. one loaded by another native addon) may already be
+  // resident. `KMP_DUPLICATE_LIB_OK=TRUE` tells LLVM libomp / Intel
+  // libiomp5 to coexist; it must be in `process.env` before the `require()`
+  // below triggers the addon's `dlopen`, since libomp's constructor reads
+  // the env during dependency resolution and is too late to influence
+  // afterwards. Left unguarded because the variable is harmless on
+  // platforms / runtimes (GCC libgomp) that don't recognize it, and a user
+  // who set it to something else is respected by `??=`. See
+  // `python/numkong/__init__.py` for the Python analog.
+  process.env.KMP_DUPLICATE_LIB_OK ??= "TRUE";
 
-try {
-  let builddir = getBuildDir(getDirName());
-  compiled = build(builddir);
+  // Tier 1: platform-specific optional dependency (@numkong/<os>-<arch>)
+  try {
+    const req = createRequire(path.join(getDirName(), "noop.js"));
+    return req(`@numkong/${process.platform}-${process.arch}`);
+  } catch { }
 
-  // Initialize conversion functions for types.ts
+  // Tier 2: node-gyp-build fallback (local dev, unsupported platform, build-from-source)
+  try {
+    return build(getBuildDir(getDirName()));
+  } catch { }
+
+  return null;
+}
+
+let compiled: any = loadNativeAddon();
+
+if (compiled) {
   setConversionFunctions({
     castF16ToF32: compiled.castF16ToF32,
     castF32ToF16: compiled.castF32ToF16,
@@ -49,12 +74,11 @@ try {
     castF32ToE5M2: compiled.castF32ToE5M2,
     cast: compiled.cast,
   });
-} catch (e) {
-  // Native addon not available
-  // For WASM usage, import the Emscripten module directly (see test/test-wasm.mjs)
+} else {
   throw new Error(
-    "NumKong native addon not found. Build with `npm run build` or use WASM " +
-    "by importing the Emscripten module directly. See test/test-wasm.mjs for examples."
+    "NumKong native addon not found. Install with `npm install numkong` (which fetches " +
+    "the prebuilt binary), or build from source with `npm run install`. " +
+    "For WASM, import from 'numkong/wasm' instead."
   );
 }
 
@@ -76,7 +100,7 @@ export const Capability = {
   SVE: 1n << 10n,            // 2020: ARM SVE
   SVEHALF: 1n << 11n,        // 2020: ARM SVE FP16
   SVESDOT: 1n << 12n,        // 2020: ARM SVE i8 dot
-  SIERRA: 1n << 13n,         // 2021: Intel AVX2+VNNI
+  ALDER: 1n << 13n,          // 2021: Intel AVX2+VNNI
   SVEBFDOT: 1n << 14n,       // 2021: ARM SVE BF16
   SVE2: 1n << 15n,           // 2022: ARM SVE2
   V128RELAXED: 1n << 16n,    // 2022: WASM Relaxed SIMD
@@ -97,7 +121,12 @@ export const Capability = {
   SMEBF16: 1n << 31n,        // 2025+: ARM SME B16B16
   SMELUT2: 1n << 32n,        // 2025+: ARM SME LUTv2
   RVVBB: 1n << 33n,          // 2025+: RISC-V Zvbb
+  SIERRA: 1n << 34n,         // 2024: Intel AVXVNNIINT8
   SMEBI32: 1n << 35n,        // 2025+: ARM SME BI32I32
+  LOONGSONASX: 1n << 36n,    // LoongArch LASX 256-bit SIMD
+  POWERVSX: 1n << 37n,       // Power VSX 128-bit SIMD
+  DIAMOND: 1n << 38n,        // 2025+: Intel AVX10.2
+  NEONFP8: 1n << 39n,        // ARM NEON FP8
 } as const;
 
 export { Float16Array, BFloat16Array, E4M3Array, E5M2Array, BinaryArray, TensorBase, VectorBase, VectorView, Vector, MatrixBase, Matrix, PackedMatrix, outputDtype };
@@ -571,6 +600,14 @@ function getBuildDir(dir: string) {
 function getDirName() {
   try {
     if (__dirname) return __dirname;
+  } catch (e) { }
+  // Fall back to cwd, which is typically the project root in dev and CI.
+  // This helps runtimes like Deno and Bun where the `bindings` module's
+  // V8 stack-trace hack may not resolve correctly.
+  try {
+    const cwd = process.cwd();
+    if (existsSync(path.join(cwd, "build")) || existsSync(path.join(cwd, "prebuilds")))
+      return cwd;
   } catch (e) { }
   return getRoot(getFileName());
 }

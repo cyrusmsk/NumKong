@@ -1,5 +1,7 @@
 {
-    "variables": {"openssl_fips": ""},
+    "variables": {
+        "openssl_fips": ""
+    },
     "targets": [
         {
             "target_name": "numkong",
@@ -31,508 +33,153 @@
                 "c/dispatch_e2m3.c",
                 "c/dispatch_e3m2.c",
             ],
-            "include_dirs": ["include"],
-            "defines": ["NK_NATIVE_F16=0", "NK_NATIVE_BF16=0", "NK_DYNAMIC_DISPATCH=1"],
+            "include_dirs": [
+                "include"
+            ],
+            "defines": [
+                "NK_NATIVE_F16=0",
+                "NK_NATIVE_BF16=0",
+                "NK_DYNAMIC_DISPATCH=1",
+                "NK_USE_OPENMP=1"
+            ],
             "cflags": [
                 "-std=c11",
                 "-O3",
+                "-fopenmp",
                 "-Wno-unknown-pragmas",
                 "-Wno-maybe-uninitialized",
                 "-Wno-cast-function-type",
                 "-Wno-switch",
                 "-Wno-psabi",
+                "-include",
+                "<(module_root_dir)/nk_probes.h",
             ],
+            "ldflags": [
+                "-fopenmp"
+            ],
+            "msvs_settings": {
+                "VCCLCompilerTool": {
+                    "ForcedIncludeFiles": [
+                        "<(module_root_dir)/nk_probes.h"
+                    ],
+                    "AdditionalOptions": [
+                        "/Zc:preprocessor",
+                        "/openmp:llvm"
+                    ],
+                },
+            },
             "conditions": [
+                # Pin TU baseline to each arch's ABI floor; SIMD kernels use per-function pragmas.
+                # Keep per-arch table in sync with cmake/nk_compiler_flags.cmake, build.rs, setup.py.
                 [
-                    "OS=='linux'",
+                    "OS!='win' and target_arch=='arm64'",
                     {
-                        "conditions": [
-                            [
-                                "target_arch=='x64'",
-                                {
-                                    "defines": [
-                                        "NK_TARGET_HASWELL=1",
-                                        "NK_TARGET_SKYLAKE=1",
-                                        "NK_TARGET_ICELAKE=1",
-                                        "NK_TARGET_GENOA=1",
-                                        "NK_TARGET_SAPPHIRE=1",
-                                        "NK_TARGET_TURIN=1",
-                                        "NK_TARGET_ALDER=1",
-                                        "NK_TARGET_SIERRA=1",
-                                        "NK_TARGET_SAPPHIREAMX=1",
-                                        "NK_TARGET_GRANITEAMX=1",
-                                        "NK_TARGET_NEON=0",
-                                        "NK_TARGET_NEONHALF=0",
-                                        "NK_TARGET_NEONSDOT=0",
-                                        "NK_TARGET_NEONBFDOT=0",
-                                        "NK_TARGET_NEONFHM=0",
-                                        "NK_TARGET_SVE=0",
-                                        "NK_TARGET_SVEHALF=0",
-                                        "NK_TARGET_SVEBFDOT=0",
-                                        "NK_TARGET_SVESDOT=0",
-                                        "NK_TARGET_SVE2=0",
-                                        "NK_TARGET_SVE2P1=0",
-                                        "NK_TARGET_SME=0",
-                                        "NK_TARGET_SME2=0",
-                                        "NK_TARGET_SME2P1=0",
-                                        "NK_TARGET_SMEF64=0",
-                                        "NK_TARGET_SMEHALF=0",
-                                        "NK_TARGET_SMEBF16=0",
-                                        "NK_TARGET_SMEBI32=0",
-                                        "NK_TARGET_SMELUT2=0",
-                                        "NK_TARGET_SMEFA64=0",
-                                        "NK_TARGET_RVV=0",
-                                        "NK_TARGET_RVVHALF=0",
-                                        "NK_TARGET_RVVBF16=0",
-                                        "NK_TARGET_RVVBB=0",
-                                        "NK_TARGET_V128RELAXED=0",
-                                    ]
-                                },
-                            ],
-                            [
-                                "target_arch=='arm64'",
-                                {
-                                    "defines": [
-                                        "NK_TARGET_HASWELL=0",
-                                        "NK_TARGET_SKYLAKE=0",
-                                        "NK_TARGET_ICELAKE=0",
-                                        "NK_TARGET_GENOA=0",
-                                        "NK_TARGET_SAPPHIRE=0",
-                                        "NK_TARGET_TURIN=0",
-                                        "NK_TARGET_ALDER=0",
-                                        "NK_TARGET_SIERRA=0",
-                                        "NK_TARGET_SAPPHIREAMX=0",
-                                        "NK_TARGET_GRANITEAMX=0",
-                                        "NK_TARGET_NEON=1",
-                                        "NK_TARGET_NEONHALF=1",
-                                        "NK_TARGET_NEONSDOT=1",
-                                        "NK_TARGET_NEONBFDOT=1",
-                                        "NK_TARGET_NEONFHM=1",
-                                        "NK_TARGET_SVE=1",
-                                        "NK_TARGET_SVEHALF=1",
-                                        "NK_TARGET_SVEBFDOT=1",
-                                        "NK_TARGET_SVESDOT=1",
-                                        "NK_TARGET_SVE2=1",
-                                        "NK_TARGET_SVE2P1=1",
-                                        "NK_TARGET_SME=1",
-                                        "NK_TARGET_SME2=1",
-                                        "NK_TARGET_SME2P1=1",
-                                        "NK_TARGET_SMEF64=1",
-                                        "NK_TARGET_SMEHALF=1",
-                                        "NK_TARGET_SMEBF16=1",
-                                        "NK_TARGET_SMEBI32=1",
-                                        "NK_TARGET_SMELUT2=1",
-                                        "NK_TARGET_SMEFA64=1",
-                                        "NK_TARGET_RVV=0",
-                                        "NK_TARGET_RVVHALF=0",
-                                        "NK_TARGET_RVVBF16=0",
-                                        "NK_TARGET_RVVBB=0",
-                                        "NK_TARGET_V128RELAXED=0",
-                                    ]
-                                },
-                            ],
-                            [
-                                "target_arch=='riscv64'",
-                                {
-                                    "defines": [
-                                        "NK_TARGET_HASWELL=0",
-                                        "NK_TARGET_SKYLAKE=0",
-                                        "NK_TARGET_ICELAKE=0",
-                                        "NK_TARGET_GENOA=0",
-                                        "NK_TARGET_SAPPHIRE=0",
-                                        "NK_TARGET_TURIN=0",
-                                        "NK_TARGET_ALDER=0",
-                                        "NK_TARGET_SIERRA=0",
-                                        "NK_TARGET_SAPPHIREAMX=0",
-                                        "NK_TARGET_GRANITEAMX=0",
-                                        "NK_TARGET_NEON=0",
-                                        "NK_TARGET_NEONHALF=0",
-                                        "NK_TARGET_NEONSDOT=0",
-                                        "NK_TARGET_NEONBFDOT=0",
-                                        "NK_TARGET_NEONFHM=0",
-                                        "NK_TARGET_SVE=0",
-                                        "NK_TARGET_SVEHALF=0",
-                                        "NK_TARGET_SVEBFDOT=0",
-                                        "NK_TARGET_SVESDOT=0",
-                                        "NK_TARGET_SVE2=0",
-                                        "NK_TARGET_SVE2P1=0",
-                                        "NK_TARGET_SME=0",
-                                        "NK_TARGET_SME2=0",
-                                        "NK_TARGET_SME2P1=0",
-                                        "NK_TARGET_SMEF64=0",
-                                        "NK_TARGET_SMEHALF=0",
-                                        "NK_TARGET_SMEBF16=0",
-                                        "NK_TARGET_SMEBI32=0",
-                                        "NK_TARGET_SMELUT2=0",
-                                        "NK_TARGET_SMEFA64=0",
-                                        "NK_TARGET_RVV=1",
-                                        "NK_TARGET_RVVHALF=1",
-                                        "NK_TARGET_RVVBF16=1",
-                                        "NK_TARGET_RVVBB=1",
-                                        "NK_TARGET_V128RELAXED=0",
-                                    ]
-                                },
-                            ],
-                            [
-                                "target_arch=='wasm32' or target_arch=='wasm64'",
-                                {
-                                    "defines": [
-                                        "NK_TARGET_HASWELL=0",
-                                        "NK_TARGET_SKYLAKE=0",
-                                        "NK_TARGET_ICELAKE=0",
-                                        "NK_TARGET_GENOA=0",
-                                        "NK_TARGET_SAPPHIRE=0",
-                                        "NK_TARGET_TURIN=0",
-                                        "NK_TARGET_ALDER=0",
-                                        "NK_TARGET_SIERRA=0",
-                                        "NK_TARGET_SAPPHIREAMX=0",
-                                        "NK_TARGET_GRANITEAMX=0",
-                                        "NK_TARGET_NEON=0",
-                                        "NK_TARGET_NEONHALF=0",
-                                        "NK_TARGET_NEONSDOT=0",
-                                        "NK_TARGET_NEONBFDOT=0",
-                                        "NK_TARGET_NEONFHM=0",
-                                        "NK_TARGET_SVE=0",
-                                        "NK_TARGET_SVEHALF=0",
-                                        "NK_TARGET_SVEBFDOT=0",
-                                        "NK_TARGET_SVESDOT=0",
-                                        "NK_TARGET_SVE2=0",
-                                        "NK_TARGET_SVE2P1=0",
-                                        "NK_TARGET_SME=0",
-                                        "NK_TARGET_SME2=0",
-                                        "NK_TARGET_SME2P1=0",
-                                        "NK_TARGET_SMEF64=0",
-                                        "NK_TARGET_SMEHALF=0",
-                                        "NK_TARGET_SMEBF16=0",
-                                        "NK_TARGET_SMEBI32=0",
-                                        "NK_TARGET_SMELUT2=0",
-                                        "NK_TARGET_SMEFA64=0",
-                                        "NK_TARGET_RVV=0",
-                                        "NK_TARGET_RVVHALF=0",
-                                        "NK_TARGET_RVVBF16=0",
-                                        "NK_TARGET_RVVBB=0",
-                                        "NK_TARGET_V128RELAXED=1",
-                                    ]
-                                },
-                            ],
+                        "cflags": [
+                            "-march=armv8-a"
                         ]
-                    },
+                    }
                 ],
                 [
-                    "OS=='freebsd'",
+                    "OS!='win' and target_arch=='x64'",
                     {
-                        "conditions": [
-                            [
-                                "target_arch=='x64'",
-                                {
-                                    "defines": [
-                                        "NK_TARGET_HASWELL=1",
-                                        "NK_TARGET_SKYLAKE=1",
-                                        "NK_TARGET_ICELAKE=1",
-                                        "NK_TARGET_GENOA=1",
-                                        "NK_TARGET_SAPPHIRE=1",
-                                        "NK_TARGET_TURIN=1",
-                                        "NK_TARGET_ALDER=1",
-                                        "NK_TARGET_SIERRA=1",
-                                        "NK_TARGET_SAPPHIREAMX=0",
-                                        "NK_TARGET_GRANITEAMX=0",
-                                        "NK_TARGET_NEON=0",
-                                        "NK_TARGET_NEONHALF=0",
-                                        "NK_TARGET_NEONSDOT=0",
-                                        "NK_TARGET_NEONBFDOT=0",
-                                        "NK_TARGET_NEONFHM=0",
-                                        "NK_TARGET_SVE=0",
-                                        "NK_TARGET_SVEHALF=0",
-                                        "NK_TARGET_SVEBFDOT=0",
-                                        "NK_TARGET_SVESDOT=0",
-                                        "NK_TARGET_SVE2=0",
-                                        "NK_TARGET_SVE2P1=0",
-                                        "NK_TARGET_SME=0",
-                                        "NK_TARGET_SME2=0",
-                                        "NK_TARGET_SME2P1=0",
-                                        "NK_TARGET_SMEF64=0",
-                                        "NK_TARGET_SMEHALF=0",
-                                        "NK_TARGET_SMEBF16=0",
-                                        "NK_TARGET_SMEBI32=0",
-                                        "NK_TARGET_SMELUT2=0",
-                                        "NK_TARGET_SMEFA64=0",
-                                        "NK_TARGET_RVV=0",
-                                        "NK_TARGET_RVVHALF=0",
-                                        "NK_TARGET_RVVBF16=0",
-                                        "NK_TARGET_RVVBB=0",
-                                        "NK_TARGET_V128RELAXED=0",
-                                    ]
-                                },
-                            ],
-                            [
-                                "target_arch=='arm64'",
-                                {
-                                    "defines": [
-                                        "NK_TARGET_HASWELL=0",
-                                        "NK_TARGET_SKYLAKE=0",
-                                        "NK_TARGET_ICELAKE=0",
-                                        "NK_TARGET_GENOA=0",
-                                        "NK_TARGET_SAPPHIRE=0",
-                                        "NK_TARGET_TURIN=0",
-                                        "NK_TARGET_ALDER=0",
-                                        "NK_TARGET_SIERRA=0",
-                                        "NK_TARGET_SAPPHIREAMX=0",
-                                        "NK_TARGET_GRANITEAMX=0",
-                                        "NK_TARGET_NEON=1",
-                                        "NK_TARGET_NEONHALF=1",
-                                        "NK_TARGET_NEONSDOT=1",
-                                        "NK_TARGET_NEONBFDOT=1",
-                                        "NK_TARGET_NEONFHM=1",
-                                        "NK_TARGET_SVE=1",
-                                        "NK_TARGET_SVEHALF=1",
-                                        "NK_TARGET_SVEBFDOT=1",
-                                        "NK_TARGET_SVESDOT=1",
-                                        "NK_TARGET_SVE2=1",
-                                        "NK_TARGET_SVE2P1=1",
-                                        "NK_TARGET_SME=1",
-                                        "NK_TARGET_SME2=1",
-                                        "NK_TARGET_SME2P1=1",
-                                        "NK_TARGET_SMEF64=1",
-                                        "NK_TARGET_SMEHALF=1",
-                                        "NK_TARGET_SMEBF16=1",
-                                        "NK_TARGET_SMEBI32=1",
-                                        "NK_TARGET_SMELUT2=1",
-                                        "NK_TARGET_SMEFA64=1",
-                                        "NK_TARGET_RVV=0",
-                                        "NK_TARGET_RVVHALF=0",
-                                        "NK_TARGET_RVVBF16=0",
-                                        "NK_TARGET_RVVBB=0",
-                                        "NK_TARGET_V128RELAXED=0",
-                                    ]
-                                },
-                            ],
-                            [
-                                "target_arch=='riscv64'",
-                                {
-                                    "defines": [
-                                        "NK_TARGET_HASWELL=0",
-                                        "NK_TARGET_SKYLAKE=0",
-                                        "NK_TARGET_ICELAKE=0",
-                                        "NK_TARGET_GENOA=0",
-                                        "NK_TARGET_SAPPHIRE=0",
-                                        "NK_TARGET_TURIN=0",
-                                        "NK_TARGET_ALDER=0",
-                                        "NK_TARGET_SIERRA=0",
-                                        "NK_TARGET_SAPPHIREAMX=0",
-                                        "NK_TARGET_GRANITEAMX=0",
-                                        "NK_TARGET_NEON=0",
-                                        "NK_TARGET_NEONHALF=0",
-                                        "NK_TARGET_NEONSDOT=0",
-                                        "NK_TARGET_NEONBFDOT=0",
-                                        "NK_TARGET_NEONFHM=0",
-                                        "NK_TARGET_SVE=0",
-                                        "NK_TARGET_SVEHALF=0",
-                                        "NK_TARGET_SVEBFDOT=0",
-                                        "NK_TARGET_SVESDOT=0",
-                                        "NK_TARGET_SVE2=0",
-                                        "NK_TARGET_SVE2P1=0",
-                                        "NK_TARGET_SME=0",
-                                        "NK_TARGET_SME2=0",
-                                        "NK_TARGET_SME2P1=0",
-                                        "NK_TARGET_SMEF64=0",
-                                        "NK_TARGET_SMEHALF=0",
-                                        "NK_TARGET_SMEBF16=0",
-                                        "NK_TARGET_SMEBI32=0",
-                                        "NK_TARGET_SMELUT2=0",
-                                        "NK_TARGET_SMEFA64=0",
-                                        "NK_TARGET_RVV=1",
-                                        "NK_TARGET_RVVHALF=1",
-                                        "NK_TARGET_RVVBF16=1",
-                                        "NK_TARGET_RVVBB=1",
-                                        "NK_TARGET_V128RELAXED=0",
-                                    ]
-                                },
-                            ],
+                        "cflags": [
+                            "-march=x86-64"
                         ]
-                    },
+                    }
+                ],
+                [
+                    "OS!='win' and target_arch=='riscv64'",
+                    {
+                        "cflags": [
+                            "-march=rv64gc"
+                        ]
+                    }
+                ],
+                [
+                    "OS!='win' and target_arch=='ppc64'",
+                    {
+                        "cflags": [
+                            "-mcpu=power8"
+                        ]
+                    }
+                ],
+                [
+                    "OS!='win' and target_arch=='loong64'",
+                    {
+                        "cflags": [
+                            "-march=loongarch64",
+                            "-mlasx"
+                        ]
+                    }
+                ],
+                # Forbid auto-vectorization so serial fallbacks don't get silently
+                # promoted to NEON/SSE2/VSX. SIMD kernels use explicit intrinsics
+                # and per-function `target` pragmas; unaffected. MSVC has no
+                # command-line vectorizer toggle.
+                [
+                    "OS!='win'",
+                    {
+                        "cflags": [
+                            "-fno-tree-vectorize",
+                            "-fno-tree-slp-vectorize"
+                        ]
+                    }
                 ],
                 [
                     "OS=='mac'",
                     {
-                        "xcode_settings": {"MACOSX_DEPLOYMENT_TARGET": "11.0"},
-                        "conditions": [
-                            [
-                                "target_arch=='x64'",
-                                {
-                                    "defines": [
-                                        "NK_TARGET_HASWELL=1",
-                                        "NK_TARGET_SKYLAKE=0",
-                                        "NK_TARGET_ICELAKE=0",
-                                        "NK_TARGET_GENOA=0",
-                                        "NK_TARGET_SAPPHIRE=0",
-                                        "NK_TARGET_TURIN=0",
-                                        "NK_TARGET_ALDER=0",
-                                        "NK_TARGET_SIERRA=0",
-                                        "NK_TARGET_SAPPHIREAMX=0",
-                                        "NK_TARGET_GRANITEAMX=0",
-                                        "NK_TARGET_NEON=0",
-                                        "NK_TARGET_NEONHALF=0",
-                                        "NK_TARGET_NEONSDOT=0",
-                                        "NK_TARGET_NEONBFDOT=0",
-                                        "NK_TARGET_NEONFHM=0",
-                                        "NK_TARGET_SVE=0",
-                                        "NK_TARGET_SVEHALF=0",
-                                        "NK_TARGET_SVEBFDOT=0",
-                                        "NK_TARGET_SVESDOT=0",
-                                        "NK_TARGET_SVE2=0",
-                                        "NK_TARGET_SVE2P1=0",
-                                        "NK_TARGET_SME=0",
-                                        "NK_TARGET_SME2=0",
-                                        "NK_TARGET_SME2P1=0",
-                                        "NK_TARGET_SMEF64=0",
-                                        "NK_TARGET_SMEHALF=0",
-                                        "NK_TARGET_SMEBF16=0",
-                                        "NK_TARGET_SMEBI32=0",
-                                        "NK_TARGET_SMELUT2=0",
-                                        "NK_TARGET_SMEFA64=0",
-                                        "NK_TARGET_RVV=0",
-                                        "NK_TARGET_RVVHALF=0",
-                                        "NK_TARGET_RVVBF16=0",
-                                        "NK_TARGET_RVVBB=0",
-                                        "NK_TARGET_V128RELAXED=0",
-                                    ]
-                                },
+                        "xcode_settings": {
+                            "MACOSX_DEPLOYMENT_TARGET": "11.0",
+                            # Apple Clang ships no `omp.h`; the CI step
+                            # `brew install libomp` makes it keg-only under
+                            # `/opt/homebrew/opt/libomp` (arm64) or
+                            # `/usr/local/opt/libomp` (x86_64). Clang silently
+                            # ignores `-I` / `-L` dirs that don't exist, so
+                            # listing both keeps the file arch-agnostic.
+                            "OTHER_CFLAGS": [
+                                "-Xpreprocessor",
+                                "-fopenmp",
+                                "-I/opt/homebrew/opt/libomp/include",
+                                "-I/usr/local/opt/libomp/include"
                             ],
-                            [
-                                "target_arch=='arm64'",
-                                {
-                                    "defines": [
-                                        "NK_TARGET_HASWELL=0",
-                                        "NK_TARGET_SKYLAKE=0",
-                                        "NK_TARGET_ICELAKE=0",
-                                        "NK_TARGET_GENOA=0",
-                                        "NK_TARGET_SAPPHIRE=0",
-                                        "NK_TARGET_TURIN=0",
-                                        "NK_TARGET_ALDER=0",
-                                        "NK_TARGET_SIERRA=0",
-                                        "NK_TARGET_SAPPHIREAMX=0",
-                                        "NK_TARGET_GRANITEAMX=0",
-                                        "NK_TARGET_NEON=1",
-                                        "NK_TARGET_NEONHALF=1",
-                                        "NK_TARGET_NEONSDOT=1",
-                                        "NK_TARGET_NEONBFDOT=1",
-                                        "NK_TARGET_NEONFHM=1",
-                                        "NK_TARGET_SVE=0",
-                                        "NK_TARGET_SVEHALF=0",
-                                        "NK_TARGET_SVEBFDOT=0",
-                                        "NK_TARGET_SVESDOT=0",
-                                        "NK_TARGET_SVE2=0",
-                                        "NK_TARGET_SVE2P1=0",
-                                        "NK_TARGET_SME=1",
-                                        "NK_TARGET_SME2=1",
-                                        "NK_TARGET_SME2P1=1",
-                                        "NK_TARGET_SMEF64=1",
-                                        "NK_TARGET_SMEHALF=1",
-                                        "NK_TARGET_SMEBF16=1",
-                                        "NK_TARGET_SMEBI32=1",
-                                        "NK_TARGET_SMELUT2=1",
-                                        "NK_TARGET_SMEFA64=1",
-                                        "NK_TARGET_RVV=0",
-                                        "NK_TARGET_RVVHALF=0",
-                                        "NK_TARGET_RVVBF16=0",
-                                        "NK_TARGET_RVVBB=0",
-                                        "NK_TARGET_V128RELAXED=0",
-                                    ]
-                                },
-                            ],
+                            "OTHER_LDFLAGS": [
+                                "-lomp",
+                                "-L/opt/homebrew/opt/libomp/lib",
+                                "-L/usr/local/opt/libomp/lib"
+                            ]
+                        }
+                    }
+                ],
+                # MSVC: no per-function target pragma; these match defaults.
+                [
+                    "OS=='win' and target_arch=='arm64'",
+                    {
+                        "defines": [
+                            "_ARM64_"
                         ],
-                    },
+                        "msvs_settings": {
+                            "VCCLCompilerTool": {
+                                "AdditionalOptions": [
+                                    "/arch:armv8.0"
+                                ]
+                            }
+                        }
+                    }
                 ],
                 [
-                    "OS=='win'",
+                    "OS=='win' and target_arch=='x64'",
                     {
-                        "conditions": [
-                            [
-                                "target_arch=='x64'",
-                                {
-                                    "defines": [
-                                        "NK_TARGET_HASWELL=1",
-                                        "NK_TARGET_SKYLAKE=1",
-                                        "NK_TARGET_ICELAKE=1",
-                                        "NK_TARGET_GENOA=0",
-                                        "NK_TARGET_SAPPHIRE=1",
-                                        "NK_TARGET_TURIN=0",
-                                        "NK_TARGET_ALDER=0",
-                                        "NK_TARGET_SIERRA=0",
-                                        "NK_TARGET_SAPPHIREAMX=0",
-                                        "NK_TARGET_GRANITEAMX=0",
-                                        "NK_TARGET_NEON=0",
-                                        "NK_TARGET_NEONHALF=0",
-                                        "NK_TARGET_NEONSDOT=0",
-                                        "NK_TARGET_NEONBFDOT=0",
-                                        "NK_TARGET_NEONFHM=0",
-                                        "NK_TARGET_SVE=0",
-                                        "NK_TARGET_SVEHALF=0",
-                                        "NK_TARGET_SVEBFDOT=0",
-                                        "NK_TARGET_SVESDOT=0",
-                                        "NK_TARGET_SVE2=0",
-                                        "NK_TARGET_SVE2P1=0",
-                                        "NK_TARGET_SME=0",
-                                        "NK_TARGET_SME2=0",
-                                        "NK_TARGET_SME2P1=0",
-                                        "NK_TARGET_SMEF64=0",
-                                        "NK_TARGET_SMEHALF=0",
-                                        "NK_TARGET_SMEBF16=0",
-                                        "NK_TARGET_SMEBI32=0",
-                                        "NK_TARGET_SMELUT2=0",
-                                        "NK_TARGET_SMEFA64=0",
-                                        "NK_TARGET_RVV=0",
-                                        "NK_TARGET_RVVHALF=0",
-                                        "NK_TARGET_RVVBF16=0",
-                                        "NK_TARGET_RVVBB=0",
-                                        "NK_TARGET_V128RELAXED=0",
-                                    ]
-                                },
-                            ],
-                            [
-                                "target_arch=='arm64'",
-                                {
-                                    "defines": [
-                                        "NK_TARGET_HASWELL=0",
-                                        "NK_TARGET_SKYLAKE=0",
-                                        "NK_TARGET_ICELAKE=0",
-                                        "NK_TARGET_GENOA=0",
-                                        "NK_TARGET_SAPPHIRE=0",
-                                        "NK_TARGET_TURIN=0",
-                                        "NK_TARGET_ALDER=0",
-                                        "NK_TARGET_SIERRA=0",
-                                        "NK_TARGET_SAPPHIREAMX=0",
-                                        "NK_TARGET_GRANITEAMX=0",
-                                        "NK_TARGET_NEON=1",
-                                        "NK_TARGET_NEONHALF=0",
-                                        "NK_TARGET_NEONSDOT=1",
-                                        "NK_TARGET_NEONBFDOT=0",
-                                        "NK_TARGET_NEONFHM=0",
-                                        "NK_TARGET_SVE=0",
-                                        "NK_TARGET_SVEHALF=0",
-                                        "NK_TARGET_SVEBFDOT=0",
-                                        "NK_TARGET_SVESDOT=0",
-                                        "NK_TARGET_SVE2=0",
-                                        "NK_TARGET_SVE2P1=0",
-                                        "NK_TARGET_SME=0",
-                                        "NK_TARGET_SME2=0",
-                                        "NK_TARGET_SME2P1=0",
-                                        "NK_TARGET_SMEF64=0",
-                                        "NK_TARGET_SMEHALF=0",
-                                        "NK_TARGET_SMEBF16=0",
-                                        "NK_TARGET_SMEBI32=0",
-                                        "NK_TARGET_SMELUT2=0",
-                                        "NK_TARGET_SMEFA64=0",
-                                        "NK_TARGET_RVV=0",
-                                        "NK_TARGET_RVVHALF=0",
-                                        "NK_TARGET_RVVBF16=0",
-                                        "NK_TARGET_RVVBB=0",
-                                        "NK_TARGET_V128RELAXED=0",
-                                    ]
-                                },
-                            ],
-                        ]
-                    },
+                        "defines": [
+                            "_AMD64_"
+                        ],
+                        "msvs_settings": {
+                            "VCCLCompilerTool": {
+                                "AdditionalOptions": [
+                                    "/arch:SSE2"
+                                ]
+                            }
+                        }
+                    }
                 ],
             ],
         }

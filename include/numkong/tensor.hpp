@@ -1,5 +1,5 @@
 /**
- *  @brief NumKong Tensor types and tensor-level operations for C++23 and newer.
+ *  @brief NumKong Tensor types and tensor-level operations for C++20 and newer.
  *  @file include/numkong/tensor.hpp
  *  @author Ash Vardanian
  *  @date March 2026
@@ -19,7 +19,8 @@
  *  Features:
  *  - Signed strides (ptrdiff_t) for reversed/transposed views
  *  - Signed indexing (negative = from end)
- *  - C++23 variadic `operator[]` for flat access, exact access, and trailing `slice`
+ *  - Variadic `operator()` for flat/exact access and trailing `slice` (C++20-portable);
+ *    `operator[]` multi-arg sugar provided when the compiler supports P2128 (C++23).
  *  - Axis iteration (rows_views(), rows_spans(), axis_iterator)
  *  - Conversion to vector_view/vector_span for rank-1 tensors
  */
@@ -36,6 +37,14 @@
 #include <type_traits>
 
 #include "vector.hpp" // `aligned_allocator`
+
+// True when the compiler supports C++23 P2128 multi-arg `operator[]`. Under
+// this gate we expose `t[a, b, c]` as sugar that delegates to `operator()`.
+#if defined(__cpp_multidimensional_subscript) && __cpp_multidimensional_subscript >= 202110L
+#define NK_HAS_MULTIDIMENSIONAL_SUBSCRIPT_ 1
+#else
+#define NK_HAS_MULTIDIMENSIONAL_SUBSCRIPT_ 0
+#endif
 
 namespace ashvardanian::numkong {
 
@@ -78,7 +87,7 @@ extern "C" [[noreturn]] inline void nk_assert_failure(char const *expr, char con
 #define nk_assert_(expr) ((expr) ? (void)0 : nk_assert_failure(#expr, __FILE__, __LINE__))
 #endif
 
-#pragma region - Shape Storage
+#pragma region Shape Storage
 
 /**
  *  @brief Inline fixed-capacity shape descriptor.
@@ -206,9 +215,9 @@ tensor_type_ tensor_slice_suffix_(tensor_type_ input, all_t, rest_types_... rest
 template <typename tensor_type_, typename... rest_types_>
 tensor_type_ tensor_slice_suffix_(tensor_type_ input, range r, rest_types_... rest) noexcept;
 
-#pragma endregion - Shape Storage
+#pragma endregion Shape Storage
 
-#pragma region - Tensor View
+#pragma region Tensor View
 
 template <typename view_type_>
 class axis_iterator;
@@ -300,25 +309,43 @@ struct tensor_view {
         return tensor_flat_lookup_(*this, idx);
     }
 
-    /** @brief Exact multi-dimensional scalar lookup. */
+    /** @brief Exact multi-dimensional scalar lookup via call syntax (C++20-portable). */
     template <std::integral... index_types_>
         requires(sizeof...(index_types_) >= 2)
-    decltype(auto) operator[](index_types_... idxs) const noexcept {
+    decltype(auto) operator()(index_types_... idxs) const noexcept {
         nk_assert_(shape_.rank == sizeof...(index_types_));
         auto coords = resolve_tensor_indices_<value_type_>(shape_, std::index_sequence_for<index_types_...> {},
                                                            idxs...);
         return tensor_lookup_resolved_(*this, std::span<std::size_t const, sizeof...(index_types_)>(coords));
     }
 
+#if NK_HAS_MULTIDIMENSIONAL_SUBSCRIPT_
+    /** @brief C++23 sugar: `t[i, j, k]` scalar lookup, delegates to `operator()`. */
+    template <std::integral... index_types_>
+        requires(sizeof...(index_types_) >= 2)
+    decltype(auto) operator[](index_types_... idxs) const noexcept {
+        return (*this)(idxs...);
+    }
+#endif
+
     /** @brief Trailing `slice` returns the same view. */
     constexpr tensor_view operator[](tensor_slice_t) const noexcept { return *this; }
 
-    /** @brief Prefix leading-axis slicing with a trailing `slice` marker. */
+    /** @brief Prefix leading-axis slicing with a trailing `slice` marker (call syntax, C++20-portable). */
+    template <typename first_type_, typename second_type_, typename... rest_types_>
+        requires(trailing_tensor_slice_args_v<first_type_, second_type_, rest_types_...>)
+    tensor_view operator()(first_type_ first, second_type_ second, rest_types_... rest) const noexcept {
+        return tensor_slice_suffix_(*this, first, second, rest...);
+    }
+
+#if NK_HAS_MULTIDIMENSIONAL_SUBSCRIPT_
+    /** @brief C++23 sugar: `t[i, nk::slice]` slicing, delegates to `operator()`. */
     template <typename first_type_, typename second_type_, typename... rest_types_>
         requires(trailing_tensor_slice_args_v<first_type_, second_type_, rest_types_...>)
     tensor_view operator[](first_type_ first, second_type_ second, rest_types_... rest) const noexcept {
-        return tensor_slice_suffix_(*this, first, second, rest...);
+        return (*this)(first, second, rest...);
     }
+#endif
 
     /** @brief Rank-0 scalar access. */
     decltype(auto) scalar() const noexcept {
@@ -421,9 +448,9 @@ struct tensor_view {
     }
 };
 
-#pragma endregion - Tensor View
+#pragma endregion Tensor View
 
-#pragma region - Tensor Span
+#pragma region Tensor Span
 
 /**
  *  @brief Non-owning, mutable, N-dimensional view.
@@ -512,22 +539,36 @@ struct tensor_span {
         return tensor_flat_lookup_(static_cast<tensor_view<value_type_, max_rank_>>(*this), idx);
     }
 
-    /** @brief Exact multi-dimensional scalar lookup. */
+    /** @brief Exact multi-dimensional scalar lookup via call syntax (C++20-portable). */
     template <std::integral... index_types_>
         requires(sizeof...(index_types_) >= 2)
-    decltype(auto) operator[](index_types_... idxs) noexcept {
+    decltype(auto) operator()(index_types_... idxs) noexcept {
         nk_assert_(shape_.rank == sizeof...(index_types_));
         auto coords = resolve_tensor_indices_<value_type_>(shape_, std::index_sequence_for<index_types_...> {},
                                                            idxs...);
         return tensor_lookup_resolved_(*this, std::span<std::size_t const, sizeof...(index_types_)>(coords));
     }
 
-    /** @brief Const full-coordinate lookup. */
+    /** @brief Const full-coordinate lookup via call syntax. */
+    template <std::integral... index_types_>
+        requires(sizeof...(index_types_) >= 2)
+    decltype(auto) operator()(index_types_... idxs) const noexcept {
+        return static_cast<tensor_view<value_type_, max_rank_>>(*this)(idxs...);
+    }
+
+#if NK_HAS_MULTIDIMENSIONAL_SUBSCRIPT_
+    /** @brief C++23 sugar: multi-arg `[]` scalar lookup, delegates to `operator()`. */
+    template <std::integral... index_types_>
+        requires(sizeof...(index_types_) >= 2)
+    decltype(auto) operator[](index_types_... idxs) noexcept {
+        return (*this)(idxs...);
+    }
     template <std::integral... index_types_>
         requires(sizeof...(index_types_) >= 2)
     decltype(auto) operator[](index_types_... idxs) const noexcept {
-        return static_cast<tensor_view<value_type_, max_rank_>>(*this)[idxs...];
+        return (*this)(idxs...);
     }
+#endif
 
     /** @brief Trailing `slice` returns the same span. */
     constexpr tensor_span operator[](tensor_slice_t) noexcept { return *this; }
@@ -535,20 +576,35 @@ struct tensor_span {
         return static_cast<tensor_view<value_type_, max_rank_>>(*this);
     }
 
-    /** @brief Prefix leading-axis slicing with a trailing `slice` marker. */
+    /** @brief Prefix leading-axis slicing via call syntax (C++20-portable). */
     template <typename first_type_, typename second_type_, typename... rest_types_>
         requires(trailing_tensor_slice_args_v<first_type_, second_type_, rest_types_...>)
-    tensor_span operator[](first_type_ first, second_type_ second, rest_types_... rest) noexcept {
+    tensor_span operator()(first_type_ first, second_type_ second, rest_types_... rest) noexcept {
         return tensor_slice_suffix_(*this, first, second, rest...);
     }
 
-    /** @brief Const prefix leading-axis slicing with a trailing `slice` marker. */
+    /** @brief Const prefix leading-axis slicing via call syntax. */
+    template <typename first_type_, typename second_type_, typename... rest_types_>
+        requires(trailing_tensor_slice_args_v<first_type_, second_type_, rest_types_...>)
+    tensor_view<value_type_, max_rank_> operator()(first_type_ first, second_type_ second,
+                                                   rest_types_... rest) const noexcept {
+        return tensor_slice_suffix_(static_cast<tensor_view<value_type_, max_rank_>>(*this), first, second, rest...);
+    }
+
+#if NK_HAS_MULTIDIMENSIONAL_SUBSCRIPT_
+    /** @brief C++23 sugar: multi-arg `[]` slicing, delegates to `operator()`. */
+    template <typename first_type_, typename second_type_, typename... rest_types_>
+        requires(trailing_tensor_slice_args_v<first_type_, second_type_, rest_types_...>)
+    tensor_span operator[](first_type_ first, second_type_ second, rest_types_... rest) noexcept {
+        return (*this)(first, second, rest...);
+    }
     template <typename first_type_, typename second_type_, typename... rest_types_>
         requires(trailing_tensor_slice_args_v<first_type_, second_type_, rest_types_...>)
     tensor_view<value_type_, max_rank_> operator[](first_type_ first, second_type_ second,
                                                    rest_types_... rest) const noexcept {
-        return tensor_slice_suffix_(static_cast<tensor_view<value_type_, max_rank_>>(*this), first, second, rest...);
+        return (*this)(first, second, rest...);
     }
+#endif
 
     /** @brief Rank-0 mutable scalar access. */
     decltype(auto) scalar_ref() noexcept {
@@ -700,7 +756,7 @@ struct tensor_span {
     }
 };
 
-#pragma endregion - Tensor Span
+#pragma endregion Tensor Span
 
 template <typename value_type_, std::size_t max_rank_, std::size_t extent_>
 decltype(auto) tensor_lookup_resolved_(tensor_view<value_type_, max_rank_> input,
@@ -893,7 +949,7 @@ tensor_type_ tensor_slice_suffix_(tensor_type_ input, range r, rest_types_... re
     }
 }
 
-#pragma region - Axis Iterator
+#pragma region Axis Iterator
 
 /**
  *  @brief Random-access iterator over slices along the leading dimension.
@@ -964,9 +1020,9 @@ class axis_iterator {
     constexpr std::size_t index() const noexcept { return index_; }
 };
 
-#pragma endregion - Axis Iterator
+#pragma endregion Axis Iterator
 
-#pragma region - Tensor Element Iterators
+#pragma region Tensor Element Iterators
 
 /**
  *  @brief Forward iterator over all logical scalar elements of a const tensor view.
@@ -1187,9 +1243,9 @@ struct tensor_dims_view_ {
     std::size_t size() const noexcept { return size_; }
 };
 
-#pragma endregion - Tensor Element Iterators
+#pragma endregion Tensor Element Iterators
 
-#pragma region - Tensor
+#pragma region Tensor
 
 /**
  *  @brief Owning, non-resizable, N-dimensional tensor.
@@ -1546,37 +1602,65 @@ struct tensor {
         return view()[idx];
     }
 
-    /** @brief Exact multi-dimensional scalar lookup. */
+    /** @brief Exact multi-dimensional scalar lookup via call syntax (C++20-portable). */
+    template <std::integral... index_types_>
+        requires(sizeof...(index_types_) >= 2)
+    decltype(auto) operator()(index_types_... idxs) noexcept {
+        return span()(idxs...);
+    }
+
+    /** @brief Const multidimensional lookup via call syntax. */
+    template <std::integral... index_types_>
+        requires(sizeof...(index_types_) >= 2)
+    decltype(auto) operator()(index_types_... idxs) const noexcept {
+        return view()(idxs...);
+    }
+
+#if NK_HAS_MULTIDIMENSIONAL_SUBSCRIPT_
+    /** @brief C++23 sugar: multi-arg `[]` scalar lookup, delegates to `operator()`. */
     template <std::integral... index_types_>
         requires(sizeof...(index_types_) >= 2)
     decltype(auto) operator[](index_types_... idxs) noexcept {
-        return span()[idxs...];
+        return (*this)(idxs...);
     }
-
-    /** @brief Const multidimensional lookup. */
     template <std::integral... index_types_>
         requires(sizeof...(index_types_) >= 2)
     decltype(auto) operator[](index_types_... idxs) const noexcept {
-        return view()[idxs...];
+        return (*this)(idxs...);
     }
+#endif
 
     /** @brief Trailing `slice` returns the same tensor view/span category. */
     span_type operator[](tensor_slice_t) noexcept { return span(); }
     view_type operator[](tensor_slice_t) const noexcept { return view(); }
 
-    /** @brief Prefix leading-axis slicing with a trailing `slice` marker. */
+    /** @brief Prefix leading-axis slicing via call syntax (C++20-portable). */
     template <typename first_type_, typename second_type_, typename... rest_types_>
         requires(trailing_tensor_slice_args_v<first_type_, second_type_, rest_types_...>)
-    span_type operator[](first_type_ first, second_type_ second, rest_types_... rest) noexcept {
+    span_type operator()(first_type_ first, second_type_ second, rest_types_... rest) noexcept {
         return tensor_slice_suffix_(span(), first, second, rest...);
     }
 
-    /** @brief Const prefix leading-axis slicing with a trailing `slice` marker. */
+    /** @brief Const prefix leading-axis slicing via call syntax. */
+    template <typename first_type_, typename second_type_, typename... rest_types_>
+        requires(trailing_tensor_slice_args_v<first_type_, second_type_, rest_types_...>)
+    view_type operator()(first_type_ first, second_type_ second, rest_types_... rest) const noexcept {
+        return tensor_slice_suffix_(view(), first, second, rest...);
+    }
+
+#if NK_HAS_MULTIDIMENSIONAL_SUBSCRIPT_
+    /** @brief C++23 sugar: multi-arg `[]` slicing, delegates to `operator()`. */
+    template <typename first_type_, typename second_type_, typename... rest_types_>
+        requires(trailing_tensor_slice_args_v<first_type_, second_type_, rest_types_...>)
+    span_type operator[](first_type_ first, second_type_ second, rest_types_... rest) noexcept {
+        return (*this)(first, second, rest...);
+    }
     template <typename first_type_, typename second_type_, typename... rest_types_>
         requires(trailing_tensor_slice_args_v<first_type_, second_type_, rest_types_...>)
     view_type operator[](first_type_ first, second_type_ second, rest_types_... rest) const noexcept {
-        return tensor_slice_suffix_(view(), first, second, rest...);
+        return (*this)(first, second, rest...);
     }
+#endif
 
     /** @brief Rank-0 mutable scalar access. */
     decltype(auto) scalar_ref() noexcept { return span().scalar_ref(); }
@@ -1611,9 +1695,9 @@ void swap(tensor<V, A, R> &a, tensor<V, A, R> &b) noexcept {
     b = std::move(tmp);
 }
 
-#pragma endregion - Tensor
+#pragma endregion Tensor
 
-#pragma region - Matrix Aliases
+#pragma region Matrix Aliases
 
 /** @brief 2D owning matrix (max_rank = 2, smaller shape_storage). */
 template <typename value_type_, typename allocator_type_ = aligned_allocator<value_type_>>
@@ -1627,13 +1711,13 @@ using matrix_view = tensor_view<value_type_, 2>;
 template <typename value_type_>
 using matrix_span = tensor_span<value_type_, 2>;
 
-#pragma endregion - Matrix Aliases
+#pragma endregion Matrix Aliases
 
 } // namespace ashvardanian::numkong
 
 namespace ashvardanian::numkong {
 
-#pragma region - Enums and Result Types
+#pragma region Enums and Result Types
 
 /** @brief Controls whether reduction collapses or preserves the reduced axis. */
 enum keep_dims_t : bool { collapse_dims_k = false, keep_dims_k = true };
@@ -1654,9 +1738,9 @@ struct minmax_result {
     std::size_t max_index = 0;
 };
 
-#pragma endregion - Enums and Result Types
+#pragma endregion Enums and Result Types
 
-#pragma region - Helpers
+#pragma region Helpers
 
 /** @brief Compute output shape with one axis removed (or set to 1 if keep_dims). */
 template <typename value_type_, std::size_t max_rank_>
@@ -1781,10 +1865,35 @@ bool for_each_axis_lane_(tensor_view<value_type_, max_rank_> input, std::size_t 
 
     if (remaining_count == 0) return lane_fn(tensor_view<value_type_, max_rank_> {input.byte_data(), lane_shape}, 0);
 
-    std::size_t coords[max_rank_] = {};
     std::size_t total_lanes = 1;
     for (std::size_t i = 0; i < remaining_count; ++i) total_lanes *= input.extent(remaining_dims[i]);
 
+    // When non-axis dims form a uniform-stride progression, iterate with a constant byte
+    // increment instead of recomputing offsets from multi-dimensional coordinates.
+    {
+        std::size_t other_extents[max_rank_];
+        std::ptrdiff_t other_strides[max_rank_];
+        for (std::size_t i = 0; i < remaining_count; ++i) {
+            other_extents[i] = input.extent(remaining_dims[i]);
+            other_strides[i] = input.stride_bytes(remaining_dims[i]);
+        }
+        bool all_collapse = true;
+        auto expected_stride = other_strides[remaining_count - 1];
+        for (std::size_t i = remaining_count - 1; i > 0 && all_collapse; --i) {
+            expected_stride *= static_cast<std::ptrdiff_t>(other_extents[i]);
+            if (other_strides[i - 1] != expected_stride) all_collapse = false;
+        }
+        if (all_collapse) {
+            auto lane_byte_increment = other_strides[remaining_count - 1];
+            auto *ptr = input.byte_data();
+            for (std::size_t lane_index = 0; lane_index < total_lanes; ++lane_index, ptr += lane_byte_increment) {
+                if (!lane_fn(tensor_view<value_type_, max_rank_> {ptr, lane_shape}, lane_index)) return false;
+            }
+            return true;
+        }
+    }
+
+    std::size_t coords[max_rank_] = {};
     for (std::size_t lane_index = 0; lane_index < total_lanes; ++lane_index) {
         auto offset = std::ptrdiff_t {};
         for (std::size_t i = 0; i < remaining_count; ++i)
@@ -1802,6 +1911,64 @@ bool for_each_axis_lane_(tensor_view<value_type_, max_rank_> input, std::size_t 
     return true;
 }
 
+/** @brief Count trailing dimensions that are contiguous across all stride arrays.
+ *  Returns how many rightmost dims can be collapsed into a single contiguous slice. */
+template <typename value_type_, std::size_t max_rank_>
+std::size_t shared_contiguous_tail_dims_(std::size_t rank, std::size_t const *extents,
+                                         std::initializer_list<std::ptrdiff_t const *> all_strides) noexcept {
+    if constexpr (dimensions_per_value<value_type_>() > 1) return 0;
+    std::size_t tail = 0;
+    for (std::size_t i = rank; i > 0; --i) {
+        auto dim = i - 1;
+        auto expected = static_cast<std::ptrdiff_t>(sizeof(value_type_));
+        for (std::size_t d = rank; d > dim + 1; --d) expected *= static_cast<std::ptrdiff_t>(extents[d - 1]);
+        bool all_match = true;
+        for (auto const *strides : all_strides) {
+            if (strides[dim] != expected) {
+                all_match = false;
+                break;
+            }
+        }
+        if (!all_match) break;
+        ++tail;
+    }
+    return tail;
+}
+
+/** @brief Collapse contiguous trailing dimensions of a tensor_view into one. */
+template <typename value_type_, std::size_t max_rank_>
+tensor_view<value_type_, max_rank_> collapse_contiguous_tail_(tensor_view<value_type_, max_rank_> input,
+                                                              std::size_t tail_dims) noexcept {
+    shape_storage_<max_rank_> s;
+    s.rank = input.rank() - tail_dims + 1;
+    for (std::size_t i = 0; i + tail_dims < input.rank(); ++i) {
+        s.extents[i] = input.extent(i);
+        s.strides[i] = input.stride_bytes(i);
+    }
+    std::size_t product = 1;
+    for (std::size_t i = input.rank() - tail_dims; i < input.rank(); ++i) product *= input.extent(i);
+    s.extents[s.rank - 1] = product;
+    s.strides[s.rank - 1] = static_cast<std::ptrdiff_t>(sizeof(value_type_));
+    return {input.byte_data(), s};
+}
+
+/** @brief Collapse contiguous trailing dimensions of a tensor_span into one. */
+template <typename value_type_, std::size_t max_rank_>
+tensor_span<value_type_, max_rank_> collapse_contiguous_tail_(tensor_span<value_type_, max_rank_> input,
+                                                              std::size_t tail_dims) noexcept {
+    shape_storage_<max_rank_> s;
+    s.rank = input.rank() - tail_dims + 1;
+    for (std::size_t i = 0; i + tail_dims < input.rank(); ++i) {
+        s.extents[i] = input.extent(i);
+        s.strides[i] = input.stride_bytes(i);
+    }
+    std::size_t product = 1;
+    for (std::size_t i = input.rank() - tail_dims; i < input.rank(); ++i) product *= input.extent(i);
+    s.extents[s.rank - 1] = product;
+    s.strides[s.rank - 1] = static_cast<std::ptrdiff_t>(sizeof(value_type_));
+    return {input.byte_data(), s};
+}
+
 /** @brief Unary elementwise traversal: validates shapes, recurses on rank≥2, calls leaf on rank-1 slices. */
 template <typename value_type_, std::size_t max_rank_, typename leaf_fn_>
 bool elementwise_into_(tensor_view<value_type_, max_rank_> input, tensor_span<value_type_, max_rank_> output,
@@ -1810,6 +1977,12 @@ bool elementwise_into_(tensor_view<value_type_, max_rank_> input, tensor_span<va
         return false;
     if (input.empty()) return true;
     if (input.rank() >= 2) {
+        auto tail = shared_contiguous_tail_dims_<value_type_, max_rank_>(
+            input.rank(), input.shape().extents, {input.shape().strides, output.shape().strides});
+        if (tail >= 2)
+            return elementwise_into_<value_type_, max_rank_>(collapse_contiguous_tail_(input, tail),
+                                                             collapse_contiguous_tail_(output, tail),
+                                                             std::forward<leaf_fn_>(leaf));
         for (std::size_t i = 0; i < input.extent(0); ++i) {
             auto idx = static_cast<std::ptrdiff_t>(i);
             if (!elementwise_into_<value_type_, max_rank_>(input.slice_leading(idx), output.slice_leading(idx), leaf))
@@ -1831,6 +2004,12 @@ bool elementwise_into_(tensor_view<value_type_, max_rank_> lhs, tensor_view<valu
         return false;
     if (lhs.empty()) return true;
     if (lhs.rank() >= 2) {
+        auto tail = shared_contiguous_tail_dims_<value_type_, max_rank_>(
+            lhs.rank(), lhs.shape().extents, {lhs.shape().strides, rhs.shape().strides, output.shape().strides});
+        if (tail >= 2)
+            return elementwise_into_<value_type_, max_rank_>(
+                collapse_contiguous_tail_(lhs, tail), collapse_contiguous_tail_(rhs, tail),
+                collapse_contiguous_tail_(output, tail), std::forward<leaf_fn_>(leaf));
         for (std::size_t i = 0; i < lhs.extent(0); ++i) {
             auto idx = static_cast<std::ptrdiff_t>(i);
             if (!elementwise_into_<value_type_, max_rank_>(lhs.slice_leading(idx), rhs.slice_leading(idx),
@@ -1856,6 +2035,14 @@ bool elementwise_into_(tensor_view<value_type_, max_rank_> a, tensor_view<value_
         return false;
     if (a.empty()) return true;
     if (a.rank() >= 2) {
+        auto tail = shared_contiguous_tail_dims_<value_type_, max_rank_>(
+            a.rank(), a.shape().extents,
+            {a.shape().strides, b.shape().strides, c.shape().strides, output.shape().strides});
+        if (tail >= 2)
+            return elementwise_into_<value_type_, max_rank_>(
+                collapse_contiguous_tail_(a, tail), collapse_contiguous_tail_(b, tail),
+                collapse_contiguous_tail_(c, tail), collapse_contiguous_tail_(output, tail),
+                std::forward<leaf_fn_>(leaf));
         for (std::size_t i = 0; i < a.extent(0); ++i) {
             auto idx = static_cast<std::ptrdiff_t>(i);
             if (!elementwise_into_<value_type_, max_rank_>(a.slice_leading(idx), b.slice_leading(idx),
@@ -1871,7 +2058,7 @@ bool elementwise_into_(tensor_view<value_type_, max_rank_> a, tensor_view<value_
     return true;
 }
 
-#pragma endregion - Helpers
+#pragma endregion Helpers
 
 } // namespace ashvardanian::numkong
 

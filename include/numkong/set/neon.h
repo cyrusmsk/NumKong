@@ -41,7 +41,7 @@
 #ifndef NK_SET_NEON_H
 #define NK_SET_NEON_H
 
-#if NK_TARGET_ARM_
+#if NK_TARGET_ARM64_
 #if NK_TARGET_NEON
 
 #include "numkong/types.h"      // `nk_u1x8_t`
@@ -58,7 +58,7 @@ extern "C" {
 #pragma GCC target("arch=armv8-a+simd")
 #endif
 
-#pragma region - Binary Sets
+#pragma region Binary Sets
 
 NK_PUBLIC void nk_hamming_u1_neon(nk_u1x8_t const *a, nk_u1x8_t const *b, nk_size_t n, nk_u32_t *result) {
     nk_size_t n_bytes = nk_size_divide_round_up_(n, NK_BITS_PER_BYTE);
@@ -109,9 +109,9 @@ NK_PUBLIC void nk_jaccard_u1_neon(nk_u1x8_t const *a, nk_u1x8_t const *b, nk_siz
     *result = (union_count != 0) ? 1.0f - (nk_f32_t)intersection_count / (nk_f32_t)union_count : 0.0f;
 }
 
-#pragma endregion - Binary Sets
+#pragma endregion Binary Sets
 
-#pragma region - Integer Sets
+#pragma region Integer Sets
 
 NK_PUBLIC void nk_jaccard_u32_neon(nk_u32_t const *a, nk_u32_t const *b, nk_size_t n, nk_f32_t *result) {
     nk_u32_t intersection_count = 0;
@@ -174,9 +174,9 @@ NK_PUBLIC void nk_jaccard_u16_neon(nk_u16_t const *a, nk_u16_t const *b, nk_size
     *result = (n != 0) ? 1.0f - (nk_f32_t)matches / (nk_f32_t)n : 0.0f;
 }
 
-#pragma endregion - Integer Sets
+#pragma endregion Integer Sets
 
-#pragma region - Stateful Streaming
+#pragma region Stateful Streaming
 
 typedef struct nk_hamming_u1x128_state_neon_t {
     uint32x4_t intersection_count_u32x4;
@@ -290,12 +290,11 @@ NK_INTERNAL void nk_jaccard_u1x128_finalize_neon( //
     float32x4_t intersection_f32x4 = vcvtq_f32_u32(intersection_u32x4);
 
     // Compute union using |A ∪ B| = |A| + |B| - |A ∩ B|
-    // Build target popcounts vector using lane insertion (avoids union store/load round-trip).
+    // Build target popcounts vector from two independent halves (avoids serial lane insertion chain).
     float32x4_t query_f32x4 = vdupq_n_f32(query_popcount);
-    float32x4_t targets_f32x4 = vdupq_n_f32(target_popcount_a);
-    targets_f32x4 = vsetq_lane_f32(target_popcount_b, targets_f32x4, 1);
-    targets_f32x4 = vsetq_lane_f32(target_popcount_c, targets_f32x4, 2);
-    targets_f32x4 = vsetq_lane_f32(target_popcount_d, targets_f32x4, 3);
+    float32x2_t targets_ab_f32x2 = vset_lane_f32(target_popcount_b, vdup_n_f32(target_popcount_a), 1);
+    float32x2_t targets_cd_f32x2 = vset_lane_f32(target_popcount_d, vdup_n_f32(target_popcount_c), 1);
+    float32x4_t targets_f32x4 = vcombine_f32(targets_ab_f32x2, targets_cd_f32x2);
     float32x4_t union_f32x4 = vsubq_f32(vaddq_f32(query_f32x4, targets_f32x4), intersection_f32x4);
 
     // Handle zero-union edge case (empty vectors → distance = 0.0, matching scipy convention)
@@ -347,7 +346,7 @@ NK_INTERNAL void nk_jaccard_f32x4_from_dot_neon_(nk_b128_vec_t dots, nk_u32_t qu
     results->f32x4 = vbslq_f32(zero_union_mask, vdupq_n_f32(0.0f), jaccard_f32x4);
 }
 
-#pragma endregion - Stateful Streaming
+#pragma endregion Stateful Streaming
 
 #if defined(__clang__)
 #pragma clang attribute pop
@@ -360,5 +359,5 @@ NK_INTERNAL void nk_jaccard_f32x4_from_dot_neon_(nk_b128_vec_t dots, nk_u32_t qu
 #endif
 
 #endif // NK_TARGET_NEON
-#endif // NK_TARGET_ARM_
+#endif // NK_TARGET_ARM64_
 #endif // NK_SET_NEON_H

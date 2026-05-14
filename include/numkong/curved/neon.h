@@ -24,7 +24,7 @@
 #ifndef NK_CURVED_NEON_H
 #define NK_CURVED_NEON_H
 
-#if NK_TARGET_ARM_
+#if NK_TARGET_ARM64_
 #if NK_TARGET_NEON
 
 #include "numkong/types.h"
@@ -189,6 +189,131 @@ NK_PUBLIC void nk_bilinear_f32c_neon(nk_f32c_t const *a_pairs, nk_f32c_t const *
     results->imag = outer_sum_imag_f64;
 }
 
+NK_PUBLIC void nk_bilinear_f16_neon(nk_f16_t const *a, nk_f16_t const *b, nk_f16_t const *c, nk_size_t n,
+                                    nk_f32_t *result) {
+    nk_f32_t outer_sum = 0;
+    for (nk_size_t row = 0; row != n; ++row) {
+        nk_f16_t const *c_row = c + row * n;
+        nk_f32_t a_row;
+        nk_f16_to_f32_serial(a + row, &a_row);
+        float32x4_t inner_sum_f32x4 = vdupq_n_f32(0);
+        nk_size_t column = 0;
+        for (; column + 8 <= n; column += 8) {
+            float16x8_t b_f16x8 = vreinterpretq_f16_u16(vld1q_u16((nk_u16_t const *)(b + column)));
+            float16x8_t c_f16x8 = vreinterpretq_f16_u16(vld1q_u16((nk_u16_t const *)(c_row + column)));
+            float32x4_t b_low_f32x4 = vcvt_f32_f16(vget_low_f16(b_f16x8));
+            float32x4_t b_high_f32x4 = vcvt_high_f32_f16(b_f16x8);
+            float32x4_t c_low_f32x4 = vcvt_f32_f16(vget_low_f16(c_f16x8));
+            float32x4_t c_high_f32x4 = vcvt_high_f32_f16(c_f16x8);
+            inner_sum_f32x4 = vfmaq_f32(inner_sum_f32x4, c_low_f32x4, b_low_f32x4);
+            inner_sum_f32x4 = vfmaq_f32(inner_sum_f32x4, c_high_f32x4, b_high_f32x4);
+        }
+        nk_f32_t inner_sum = vaddvq_f32(inner_sum_f32x4);
+        for (; column < n; ++column) {
+            nk_f32_t b_val, c_val;
+            nk_f16_to_f32_serial(b + column, &b_val);
+            nk_f16_to_f32_serial(c_row + column, &c_val);
+            inner_sum += c_val * b_val;
+        }
+        outer_sum += a_row * inner_sum;
+    }
+    *result = outer_sum;
+}
+
+NK_PUBLIC void nk_mahalanobis_f16_neon(nk_f16_t const *a, nk_f16_t const *b, nk_f16_t const *c, nk_size_t n,
+                                       nk_f32_t *result) {
+    nk_f32_t outer_sum = 0;
+    for (nk_size_t row = 0; row != n; ++row) {
+        nk_f16_t const *c_row = c + row * n;
+        nk_f32_t a_row, b_row;
+        nk_f16_to_f32_serial(a + row, &a_row);
+        nk_f16_to_f32_serial(b + row, &b_row);
+        nk_f32_t diff_row = a_row - b_row;
+        float32x4_t inner_sum_f32x4 = vdupq_n_f32(0);
+        nk_size_t column = 0;
+        for (; column + 8 <= n; column += 8) {
+            float16x8_t a_f16x8 = vreinterpretq_f16_u16(vld1q_u16((nk_u16_t const *)(a + column)));
+            float16x8_t b_f16x8 = vreinterpretq_f16_u16(vld1q_u16((nk_u16_t const *)(b + column)));
+            float16x8_t c_f16x8 = vreinterpretq_f16_u16(vld1q_u16((nk_u16_t const *)(c_row + column)));
+            float32x4_t a_low_f32x4 = vcvt_f32_f16(vget_low_f16(a_f16x8));
+            float32x4_t a_high_f32x4 = vcvt_high_f32_f16(a_f16x8);
+            float32x4_t b_low_f32x4 = vcvt_f32_f16(vget_low_f16(b_f16x8));
+            float32x4_t b_high_f32x4 = vcvt_high_f32_f16(b_f16x8);
+            float32x4_t c_low_f32x4 = vcvt_f32_f16(vget_low_f16(c_f16x8));
+            float32x4_t c_high_f32x4 = vcvt_high_f32_f16(c_f16x8);
+            float32x4_t diff_low_f32x4 = vsubq_f32(a_low_f32x4, b_low_f32x4);
+            float32x4_t diff_high_f32x4 = vsubq_f32(a_high_f32x4, b_high_f32x4);
+            inner_sum_f32x4 = vfmaq_f32(inner_sum_f32x4, c_low_f32x4, diff_low_f32x4);
+            inner_sum_f32x4 = vfmaq_f32(inner_sum_f32x4, c_high_f32x4, diff_high_f32x4);
+        }
+        nk_f32_t inner_sum = vaddvq_f32(inner_sum_f32x4);
+        for (; column < n; ++column) {
+            nk_f32_t a_val, b_val, c_val;
+            nk_f16_to_f32_serial(a + column, &a_val);
+            nk_f16_to_f32_serial(b + column, &b_val);
+            nk_f16_to_f32_serial(c_row + column, &c_val);
+            inner_sum += c_val * (a_val - b_val);
+        }
+        outer_sum += diff_row * inner_sum;
+    }
+    nk_f32_t quadratic = outer_sum;
+    *result = nk_f32_sqrt_neon(quadratic > 0 ? quadratic : 0);
+}
+
+NK_PUBLIC void nk_bilinear_f16c_neon(nk_f16c_t const *a_pairs, nk_f16c_t const *b_pairs, nk_f16c_t const *c_pairs,
+                                     nk_size_t n, nk_f32c_t *results) {
+    nk_f32_t outer_sum_real = 0;
+    nk_f32_t outer_sum_imag = 0;
+    for (nk_size_t row = 0; row != n; ++row) {
+        nk_f16c_t const *c_row = c_pairs + row * n;
+        nk_f32_t a_real, a_imag;
+        nk_f16_to_f32_serial(&(a_pairs + row)->real, &a_real);
+        nk_f16_to_f32_serial(&(a_pairs + row)->imag, &a_imag);
+        float32x4_t inner_sum_real_f32x4 = vdupq_n_f32(0);
+        float32x4_t inner_sum_imag_f32x4 = vdupq_n_f32(0);
+        nk_size_t column = 0;
+        for (; column + 8 <= n; column += 8) {
+            int16x8x2_t b_i16x8x2 = vld2q_s16((short const *)(b_pairs + column));
+            int16x8x2_t c_i16x8x2 = vld2q_s16((short const *)(c_row + column));
+            float16x8_t b_real_f16x8 = vreinterpretq_f16_s16(b_i16x8x2.val[0]);
+            float16x8_t b_imag_f16x8 = vreinterpretq_f16_s16(b_i16x8x2.val[1]);
+            float16x8_t c_real_f16x8 = vreinterpretq_f16_s16(c_i16x8x2.val[0]);
+            float16x8_t c_imag_f16x8 = vreinterpretq_f16_s16(c_i16x8x2.val[1]);
+            float32x4_t b_real_low_f32x4 = vcvt_f32_f16(vget_low_f16(b_real_f16x8));
+            float32x4_t b_real_high_f32x4 = vcvt_high_f32_f16(b_real_f16x8);
+            float32x4_t b_imag_low_f32x4 = vcvt_f32_f16(vget_low_f16(b_imag_f16x8));
+            float32x4_t b_imag_high_f32x4 = vcvt_high_f32_f16(b_imag_f16x8);
+            float32x4_t c_real_low_f32x4 = vcvt_f32_f16(vget_low_f16(c_real_f16x8));
+            float32x4_t c_real_high_f32x4 = vcvt_high_f32_f16(c_real_f16x8);
+            float32x4_t c_imag_low_f32x4 = vcvt_f32_f16(vget_low_f16(c_imag_f16x8));
+            float32x4_t c_imag_high_f32x4 = vcvt_high_f32_f16(c_imag_f16x8);
+            inner_sum_real_f32x4 = vfmaq_f32(inner_sum_real_f32x4, c_real_low_f32x4, b_real_low_f32x4);
+            inner_sum_real_f32x4 = vfmsq_f32(inner_sum_real_f32x4, c_imag_low_f32x4, b_imag_low_f32x4);
+            inner_sum_real_f32x4 = vfmaq_f32(inner_sum_real_f32x4, c_real_high_f32x4, b_real_high_f32x4);
+            inner_sum_real_f32x4 = vfmsq_f32(inner_sum_real_f32x4, c_imag_high_f32x4, b_imag_high_f32x4);
+            inner_sum_imag_f32x4 = vfmaq_f32(inner_sum_imag_f32x4, c_real_low_f32x4, b_imag_low_f32x4);
+            inner_sum_imag_f32x4 = vfmaq_f32(inner_sum_imag_f32x4, c_imag_low_f32x4, b_real_low_f32x4);
+            inner_sum_imag_f32x4 = vfmaq_f32(inner_sum_imag_f32x4, c_real_high_f32x4, b_imag_high_f32x4);
+            inner_sum_imag_f32x4 = vfmaq_f32(inner_sum_imag_f32x4, c_imag_high_f32x4, b_real_high_f32x4);
+        }
+        nk_f32_t inner_sum_real = vaddvq_f32(inner_sum_real_f32x4);
+        nk_f32_t inner_sum_imag = vaddvq_f32(inner_sum_imag_f32x4);
+        for (; column < n; ++column) {
+            nk_f32_t b_real, b_imag, c_real, c_imag;
+            nk_f16_to_f32_serial(&(b_pairs + column)->real, &b_real);
+            nk_f16_to_f32_serial(&(b_pairs + column)->imag, &b_imag);
+            nk_f16_to_f32_serial(&(c_row + column)->real, &c_real);
+            nk_f16_to_f32_serial(&(c_row + column)->imag, &c_imag);
+            inner_sum_real += c_real * b_real - c_imag * b_imag;
+            inner_sum_imag += c_real * b_imag + c_imag * b_real;
+        }
+        outer_sum_real += a_real * inner_sum_real - a_imag * inner_sum_imag;
+        outer_sum_imag += a_real * inner_sum_imag + a_imag * inner_sum_real;
+    }
+    results->real = outer_sum_real;
+    results->imag = outer_sum_imag;
+}
+
 #if defined(__clang__)
 #pragma clang attribute pop
 #elif defined(__GNUC__)
@@ -200,5 +325,5 @@ NK_PUBLIC void nk_bilinear_f32c_neon(nk_f32c_t const *a_pairs, nk_f32c_t const *
 #endif
 
 #endif // NK_TARGET_NEON
-#endif // NK_TARGET_ARM_
+#endif // NK_TARGET_ARM64_
 #endif // NK_CURVED_NEON_H

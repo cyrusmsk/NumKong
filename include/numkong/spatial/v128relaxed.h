@@ -64,7 +64,7 @@ NK_INTERNAL nk_f64_t nk_angular_normalize_f64_v128relaxed_(nk_f64_t ab, nk_f64_t
     return result > 0.0 ? result : 0.0;
 }
 
-#pragma region - Traditional Floats
+#pragma region F32 and F64 Floats
 
 NK_PUBLIC void nk_sqeuclidean_f32_v128relaxed(nk_f32_t const *a, nk_f32_t const *b, nk_size_t n, nk_f64_t *result) {
     v128_t sum_f64x2 = wasm_f64x2_splat(0.0);
@@ -83,8 +83,8 @@ nk_sqeuclidean_f32_v128relaxed_cycle:
         nk_load_b64_serial_(b_scalars, &b_f32_vec);
         a_scalars += 2, b_scalars += 2, count_scalars -= 2;
     }
-    v128_t a_f32x2 = wasm_v128_load64_zero(&a_f32_vec.u64);
-    v128_t b_f32x2 = wasm_v128_load64_zero(&b_f32_vec.u64);
+    v128_t a_f32x2 = wasm_i64x2_splat(a_f32_vec.u64);
+    v128_t b_f32x2 = wasm_i64x2_splat(b_f32_vec.u64);
     v128_t a_f64x2 = wasm_f64x2_promote_low_f32x4(a_f32x2);
     v128_t b_f64x2 = wasm_f64x2_promote_low_f32x4(b_f32x2);
     v128_t diff_f64x2 = wasm_f64x2_sub(a_f64x2, b_f64x2);
@@ -152,8 +152,8 @@ nk_angular_f32_v128relaxed_cycle:
     }
 
     // Upcast F32x2 → F64x2 for high-precision accumulation
-    v128_t a_f32x2 = wasm_v128_load64_zero(&a_f32_vec.u64);
-    v128_t b_f32x2 = wasm_v128_load64_zero(&b_f32_vec.u64);
+    v128_t a_f32x2 = wasm_i64x2_splat(a_f32_vec.u64);
+    v128_t b_f32x2 = wasm_i64x2_splat(b_f32_vec.u64);
     v128_t a_f64x2 = wasm_f64x2_promote_low_f32x4(a_f32x2);
     v128_t b_f64x2 = wasm_f64x2_promote_low_f32x4(b_f32x2);
 
@@ -203,8 +203,8 @@ nk_angular_f64_v128relaxed_cycle:
     *result = nk_angular_normalize_f64_v128relaxed_(ab, a2, b2);
 }
 
-#pragma endregion - Traditional Floats
-#pragma region - Smaller Floats
+#pragma endregion F32 and F64 Floats
+#pragma region F16 and BF16 Floats
 
 NK_PUBLIC void nk_sqeuclidean_f16_v128relaxed(nk_f16_t const *a, nk_f16_t const *b, nk_size_t n, nk_f32_t *result) {
     v128_t sum_f32x4 = wasm_f32x4_splat(0.0f);
@@ -286,31 +286,30 @@ nk_angular_f16_v128relaxed_cycle:
 
 NK_PUBLIC void nk_sqeuclidean_bf16_v128relaxed(nk_bf16_t const *a, nk_bf16_t const *b, nk_size_t n, nk_f32_t *result) {
     v128_t sum_f32x4 = wasm_f32x4_splat(0.0f);
+    v128_t mask_high_u32x4 = wasm_i32x4_splat((int)0xFFFF0000);
     nk_bf16_t const *a_scalars = a, *b_scalars = b;
     nk_size_t count_scalars = n;
-    nk_b64_vec_t a_bf16_vec, b_bf16_vec;
+    nk_b128_vec_t a_bf16_vec, b_bf16_vec;
 
 nk_sqeuclidean_bf16_v128relaxed_cycle:
-    // Tail or full load
-    if (count_scalars < 4) {
-        nk_partial_load_b16x4_serial_(a_scalars, &a_bf16_vec, count_scalars);
-        nk_partial_load_b16x4_serial_(b_scalars, &b_bf16_vec, count_scalars);
+    if (count_scalars < 8) {
+        nk_partial_load_b16x8_serial_(a_scalars, &a_bf16_vec, count_scalars);
+        nk_partial_load_b16x8_serial_(b_scalars, &b_bf16_vec, count_scalars);
         count_scalars = 0;
     }
     else {
-        nk_load_b64_serial_(a_scalars, &a_bf16_vec);
-        nk_load_b64_serial_(b_scalars, &b_bf16_vec);
-        a_scalars += 4, b_scalars += 4, count_scalars -= 4;
+        nk_load_b128_v128relaxed_(a_scalars, &a_bf16_vec);
+        nk_load_b128_v128relaxed_(b_scalars, &b_bf16_vec);
+        a_scalars += 8, b_scalars += 8, count_scalars -= 8;
     }
-
-    // Convert bf16 → f32 (4 elements)
-    nk_b128_vec_t a_f32_vec = nk_bf16x4_to_f32x4_v128relaxed_(a_bf16_vec);
-    nk_b128_vec_t b_f32_vec = nk_bf16x4_to_f32x4_v128relaxed_(b_bf16_vec);
-
-    // Accumulate (a - b)²
-    v128_t diff_f32x4 = wasm_f32x4_sub(a_f32_vec.v128, b_f32_vec.v128);
-    sum_f32x4 = wasm_f32x4_relaxed_madd(diff_f32x4, diff_f32x4, sum_f32x4);
-
+    v128_t a_even_f32x4 = wasm_i32x4_shl(a_bf16_vec.v128, 16);
+    v128_t b_even_f32x4 = wasm_i32x4_shl(b_bf16_vec.v128, 16);
+    v128_t diff_even_f32x4 = wasm_f32x4_sub(a_even_f32x4, b_even_f32x4);
+    sum_f32x4 = wasm_f32x4_relaxed_madd(diff_even_f32x4, diff_even_f32x4, sum_f32x4);
+    v128_t a_odd_f32x4 = wasm_v128_and(a_bf16_vec.v128, mask_high_u32x4);
+    v128_t b_odd_f32x4 = wasm_v128_and(b_bf16_vec.v128, mask_high_u32x4);
+    v128_t diff_odd_f32x4 = wasm_f32x4_sub(a_odd_f32x4, b_odd_f32x4);
+    sum_f32x4 = wasm_f32x4_relaxed_madd(diff_odd_f32x4, diff_odd_f32x4, sum_f32x4);
     if (count_scalars) goto nk_sqeuclidean_bf16_v128relaxed_cycle;
 
     *result = nk_reduce_add_f32x4_v128relaxed_(sum_f32x4);
@@ -326,44 +325,297 @@ NK_PUBLIC void nk_angular_bf16_v128relaxed(nk_bf16_t const *a, nk_bf16_t const *
     v128_t ab_f32x4 = wasm_f32x4_splat(0.0f);
     v128_t a2_f32x4 = wasm_f32x4_splat(0.0f);
     v128_t b2_f32x4 = wasm_f32x4_splat(0.0f);
+    v128_t mask_high_u32x4 = wasm_i32x4_splat((int)0xFFFF0000);
     nk_bf16_t const *a_scalars = a, *b_scalars = b;
     nk_size_t count_scalars = n;
-    nk_b64_vec_t a_bf16_vec, b_bf16_vec;
+    nk_b128_vec_t a_bf16_vec, b_bf16_vec;
 
 nk_angular_bf16_v128relaxed_cycle:
-    if (count_scalars < 4) {
-        nk_partial_load_b16x4_serial_(a_scalars, &a_bf16_vec, count_scalars);
-        nk_partial_load_b16x4_serial_(b_scalars, &b_bf16_vec, count_scalars);
+    if (count_scalars < 8) {
+        nk_partial_load_b16x8_serial_(a_scalars, &a_bf16_vec, count_scalars);
+        nk_partial_load_b16x8_serial_(b_scalars, &b_bf16_vec, count_scalars);
         count_scalars = 0;
     }
     else {
-        nk_load_b64_serial_(a_scalars, &a_bf16_vec);
-        nk_load_b64_serial_(b_scalars, &b_bf16_vec);
-        a_scalars += 4, b_scalars += 4, count_scalars -= 4;
+        nk_load_b128_v128relaxed_(a_scalars, &a_bf16_vec);
+        nk_load_b128_v128relaxed_(b_scalars, &b_bf16_vec);
+        a_scalars += 8, b_scalars += 8, count_scalars -= 8;
     }
-
-    // Convert bf16 → f32
-    nk_b128_vec_t a_f32_vec = nk_bf16x4_to_f32x4_v128relaxed_(a_bf16_vec);
-    nk_b128_vec_t b_f32_vec = nk_bf16x4_to_f32x4_v128relaxed_(b_bf16_vec);
-
-    // Triple accumulation: ab, a², b²
-    ab_f32x4 = wasm_f32x4_relaxed_madd(a_f32_vec.v128, b_f32_vec.v128, ab_f32x4);
-    a2_f32x4 = wasm_f32x4_relaxed_madd(a_f32_vec.v128, a_f32_vec.v128, a2_f32x4);
-    b2_f32x4 = wasm_f32x4_relaxed_madd(b_f32_vec.v128, b_f32_vec.v128, b2_f32x4);
-
+    v128_t a_even_f32x4 = wasm_i32x4_shl(a_bf16_vec.v128, 16);
+    v128_t b_even_f32x4 = wasm_i32x4_shl(b_bf16_vec.v128, 16);
+    ab_f32x4 = wasm_f32x4_relaxed_madd(a_even_f32x4, b_even_f32x4, ab_f32x4);
+    a2_f32x4 = wasm_f32x4_relaxed_madd(a_even_f32x4, a_even_f32x4, a2_f32x4);
+    b2_f32x4 = wasm_f32x4_relaxed_madd(b_even_f32x4, b_even_f32x4, b2_f32x4);
+    v128_t a_odd_f32x4 = wasm_v128_and(a_bf16_vec.v128, mask_high_u32x4);
+    v128_t b_odd_f32x4 = wasm_v128_and(b_bf16_vec.v128, mask_high_u32x4);
+    ab_f32x4 = wasm_f32x4_relaxed_madd(a_odd_f32x4, b_odd_f32x4, ab_f32x4);
+    a2_f32x4 = wasm_f32x4_relaxed_madd(a_odd_f32x4, a_odd_f32x4, a2_f32x4);
+    b2_f32x4 = wasm_f32x4_relaxed_madd(b_odd_f32x4, b_odd_f32x4, b2_f32x4);
     if (count_scalars) goto nk_angular_bf16_v128relaxed_cycle;
 
-    // Reduce accumulators
     nk_f32_t ab = nk_reduce_add_f32x4_v128relaxed_(ab_f32x4);
     nk_f32_t a2 = nk_reduce_add_f32x4_v128relaxed_(a2_f32x4);
     nk_f32_t b2 = nk_reduce_add_f32x4_v128relaxed_(b2_f32x4);
-
-    // Normalize using f64 helper (handles edge cases: zero vectors, perpendicular, clamping)
     *result = (nk_f32_t)nk_angular_normalize_f64_v128relaxed_((nk_f64_t)ab, (nk_f64_t)a2, (nk_f64_t)b2);
 }
 
-#pragma endregion - Smaller Floats
-#pragma region - Spatial From-Dot Helpers
+#pragma endregion F16 and BF16 Floats
+#pragma region FP8 Floats
+
+NK_PUBLIC void nk_sqeuclidean_e4m3_v128relaxed(nk_e4m3_t const *a, nk_e4m3_t const *b, nk_size_t n, nk_f32_t *result) {
+    v128_t sum_f32x4 = wasm_f32x4_splat(0.0f);
+    nk_e4m3_t const *a_scalars = a, *b_scalars = b;
+    nk_size_t count_scalars = n;
+    nk_b32_vec_t a_raw, b_raw;
+
+nk_sqeuclidean_e4m3_v128relaxed_cycle:
+    if (count_scalars < 4) {
+        a_raw = nk_partial_load_b8x4_serial_(a_scalars, count_scalars);
+        b_raw = nk_partial_load_b8x4_serial_(b_scalars, count_scalars);
+        count_scalars = 0;
+    }
+    else {
+        nk_load_b32_serial_(a_scalars, &a_raw);
+        nk_load_b32_serial_(b_scalars, &b_raw);
+        a_scalars += 4, b_scalars += 4, count_scalars -= 4;
+    }
+    nk_b128_vec_t a_f32_vec = nk_e4m3x4_to_f32x4_v128relaxed_(a_raw);
+    nk_b128_vec_t b_f32_vec = nk_e4m3x4_to_f32x4_v128relaxed_(b_raw);
+    v128_t diff_f32x4 = wasm_f32x4_sub(a_f32_vec.v128, b_f32_vec.v128);
+    sum_f32x4 = wasm_f32x4_relaxed_madd(diff_f32x4, diff_f32x4, sum_f32x4);
+    if (count_scalars) goto nk_sqeuclidean_e4m3_v128relaxed_cycle;
+
+    *result = nk_reduce_add_f32x4_v128relaxed_(sum_f32x4);
+}
+
+NK_PUBLIC void nk_euclidean_e4m3_v128relaxed(nk_e4m3_t const *a, nk_e4m3_t const *b, nk_size_t n, nk_f32_t *result) {
+    nk_sqeuclidean_e4m3_v128relaxed(a, b, n, result);
+    *result = nk_f32_sqrt_v128relaxed(*result);
+}
+
+NK_PUBLIC void nk_angular_e4m3_v128relaxed(nk_e4m3_t const *a, nk_e4m3_t const *b, nk_size_t n, nk_f32_t *result) {
+    v128_t ab_f32x4 = wasm_f32x4_splat(0.0f);
+    v128_t a2_f32x4 = wasm_f32x4_splat(0.0f);
+    v128_t b2_f32x4 = wasm_f32x4_splat(0.0f);
+    nk_e4m3_t const *a_scalars = a, *b_scalars = b;
+    nk_size_t count_scalars = n;
+    nk_b32_vec_t a_raw, b_raw;
+
+nk_angular_e4m3_v128relaxed_cycle:
+    if (count_scalars < 4) {
+        a_raw = nk_partial_load_b8x4_serial_(a_scalars, count_scalars);
+        b_raw = nk_partial_load_b8x4_serial_(b_scalars, count_scalars);
+        count_scalars = 0;
+    }
+    else {
+        nk_load_b32_serial_(a_scalars, &a_raw);
+        nk_load_b32_serial_(b_scalars, &b_raw);
+        a_scalars += 4, b_scalars += 4, count_scalars -= 4;
+    }
+    nk_b128_vec_t a_f32_vec = nk_e4m3x4_to_f32x4_v128relaxed_(a_raw);
+    nk_b128_vec_t b_f32_vec = nk_e4m3x4_to_f32x4_v128relaxed_(b_raw);
+    ab_f32x4 = wasm_f32x4_relaxed_madd(a_f32_vec.v128, b_f32_vec.v128, ab_f32x4);
+    a2_f32x4 = wasm_f32x4_relaxed_madd(a_f32_vec.v128, a_f32_vec.v128, a2_f32x4);
+    b2_f32x4 = wasm_f32x4_relaxed_madd(b_f32_vec.v128, b_f32_vec.v128, b2_f32x4);
+    if (count_scalars) goto nk_angular_e4m3_v128relaxed_cycle;
+
+    nk_f32_t ab = nk_reduce_add_f32x4_v128relaxed_(ab_f32x4);
+    nk_f32_t a2 = nk_reduce_add_f32x4_v128relaxed_(a2_f32x4);
+    nk_f32_t b2 = nk_reduce_add_f32x4_v128relaxed_(b2_f32x4);
+    *result = (nk_f32_t)nk_angular_normalize_f64_v128relaxed_((nk_f64_t)ab, (nk_f64_t)a2, (nk_f64_t)b2);
+}
+
+NK_PUBLIC void nk_sqeuclidean_e5m2_v128relaxed(nk_e5m2_t const *a, nk_e5m2_t const *b, nk_size_t n, nk_f32_t *result) {
+    v128_t sum_f32x4 = wasm_f32x4_splat(0.0f);
+    nk_e5m2_t const *a_scalars = a, *b_scalars = b;
+    nk_size_t count_scalars = n;
+    nk_b32_vec_t a_raw, b_raw;
+
+nk_sqeuclidean_e5m2_v128relaxed_cycle:
+    if (count_scalars < 4) {
+        a_raw = nk_partial_load_b8x4_serial_(a_scalars, count_scalars);
+        b_raw = nk_partial_load_b8x4_serial_(b_scalars, count_scalars);
+        count_scalars = 0;
+    }
+    else {
+        nk_load_b32_serial_(a_scalars, &a_raw);
+        nk_load_b32_serial_(b_scalars, &b_raw);
+        a_scalars += 4, b_scalars += 4, count_scalars -= 4;
+    }
+    nk_b128_vec_t a_f32_vec = nk_e5m2x4_to_f32x4_v128relaxed_(a_raw);
+    nk_b128_vec_t b_f32_vec = nk_e5m2x4_to_f32x4_v128relaxed_(b_raw);
+    v128_t diff_f32x4 = wasm_f32x4_sub(a_f32_vec.v128, b_f32_vec.v128);
+    sum_f32x4 = wasm_f32x4_relaxed_madd(diff_f32x4, diff_f32x4, sum_f32x4);
+    if (count_scalars) goto nk_sqeuclidean_e5m2_v128relaxed_cycle;
+
+    *result = nk_reduce_add_f32x4_v128relaxed_(sum_f32x4);
+}
+
+NK_PUBLIC void nk_euclidean_e5m2_v128relaxed(nk_e5m2_t const *a, nk_e5m2_t const *b, nk_size_t n, nk_f32_t *result) {
+    nk_sqeuclidean_e5m2_v128relaxed(a, b, n, result);
+    *result = nk_f32_sqrt_v128relaxed(*result);
+}
+
+NK_PUBLIC void nk_angular_e5m2_v128relaxed(nk_e5m2_t const *a, nk_e5m2_t const *b, nk_size_t n, nk_f32_t *result) {
+    v128_t ab_f32x4 = wasm_f32x4_splat(0.0f);
+    v128_t a2_f32x4 = wasm_f32x4_splat(0.0f);
+    v128_t b2_f32x4 = wasm_f32x4_splat(0.0f);
+    nk_e5m2_t const *a_scalars = a, *b_scalars = b;
+    nk_size_t count_scalars = n;
+    nk_b32_vec_t a_raw, b_raw;
+
+nk_angular_e5m2_v128relaxed_cycle:
+    if (count_scalars < 4) {
+        a_raw = nk_partial_load_b8x4_serial_(a_scalars, count_scalars);
+        b_raw = nk_partial_load_b8x4_serial_(b_scalars, count_scalars);
+        count_scalars = 0;
+    }
+    else {
+        nk_load_b32_serial_(a_scalars, &a_raw);
+        nk_load_b32_serial_(b_scalars, &b_raw);
+        a_scalars += 4, b_scalars += 4, count_scalars -= 4;
+    }
+    nk_b128_vec_t a_f32_vec = nk_e5m2x4_to_f32x4_v128relaxed_(a_raw);
+    nk_b128_vec_t b_f32_vec = nk_e5m2x4_to_f32x4_v128relaxed_(b_raw);
+    ab_f32x4 = wasm_f32x4_relaxed_madd(a_f32_vec.v128, b_f32_vec.v128, ab_f32x4);
+    a2_f32x4 = wasm_f32x4_relaxed_madd(a_f32_vec.v128, a_f32_vec.v128, a2_f32x4);
+    b2_f32x4 = wasm_f32x4_relaxed_madd(b_f32_vec.v128, b_f32_vec.v128, b2_f32x4);
+    if (count_scalars) goto nk_angular_e5m2_v128relaxed_cycle;
+
+    nk_f32_t ab = nk_reduce_add_f32x4_v128relaxed_(ab_f32x4);
+    nk_f32_t a2 = nk_reduce_add_f32x4_v128relaxed_(a2_f32x4);
+    nk_f32_t b2 = nk_reduce_add_f32x4_v128relaxed_(b2_f32x4);
+    *result = (nk_f32_t)nk_angular_normalize_f64_v128relaxed_((nk_f64_t)ab, (nk_f64_t)a2, (nk_f64_t)b2);
+}
+
+NK_PUBLIC void nk_sqeuclidean_e2m3_v128relaxed(nk_e2m3_t const *a, nk_e2m3_t const *b, nk_size_t n, nk_f32_t *result) {
+    v128_t sum_f32x4 = wasm_f32x4_splat(0.0f);
+    nk_e2m3_t const *a_scalars = a, *b_scalars = b;
+    nk_size_t count_scalars = n;
+    nk_b32_vec_t a_raw, b_raw;
+
+nk_sqeuclidean_e2m3_v128relaxed_cycle:
+    if (count_scalars < 4) {
+        a_raw = nk_partial_load_b8x4_serial_(a_scalars, count_scalars);
+        b_raw = nk_partial_load_b8x4_serial_(b_scalars, count_scalars);
+        count_scalars = 0;
+    }
+    else {
+        nk_load_b32_serial_(a_scalars, &a_raw);
+        nk_load_b32_serial_(b_scalars, &b_raw);
+        a_scalars += 4, b_scalars += 4, count_scalars -= 4;
+    }
+    nk_b128_vec_t a_f32_vec = nk_e2m3x4_to_f32x4_v128relaxed_(a_raw);
+    nk_b128_vec_t b_f32_vec = nk_e2m3x4_to_f32x4_v128relaxed_(b_raw);
+    v128_t diff_f32x4 = wasm_f32x4_sub(a_f32_vec.v128, b_f32_vec.v128);
+    sum_f32x4 = wasm_f32x4_relaxed_madd(diff_f32x4, diff_f32x4, sum_f32x4);
+    if (count_scalars) goto nk_sqeuclidean_e2m3_v128relaxed_cycle;
+
+    *result = nk_reduce_add_f32x4_v128relaxed_(sum_f32x4);
+}
+
+NK_PUBLIC void nk_euclidean_e2m3_v128relaxed(nk_e2m3_t const *a, nk_e2m3_t const *b, nk_size_t n, nk_f32_t *result) {
+    nk_sqeuclidean_e2m3_v128relaxed(a, b, n, result);
+    *result = nk_f32_sqrt_v128relaxed(*result);
+}
+
+NK_PUBLIC void nk_angular_e2m3_v128relaxed(nk_e2m3_t const *a, nk_e2m3_t const *b, nk_size_t n, nk_f32_t *result) {
+    v128_t ab_f32x4 = wasm_f32x4_splat(0.0f);
+    v128_t a2_f32x4 = wasm_f32x4_splat(0.0f);
+    v128_t b2_f32x4 = wasm_f32x4_splat(0.0f);
+    nk_e2m3_t const *a_scalars = a, *b_scalars = b;
+    nk_size_t count_scalars = n;
+    nk_b32_vec_t a_raw, b_raw;
+
+nk_angular_e2m3_v128relaxed_cycle:
+    if (count_scalars < 4) {
+        a_raw = nk_partial_load_b8x4_serial_(a_scalars, count_scalars);
+        b_raw = nk_partial_load_b8x4_serial_(b_scalars, count_scalars);
+        count_scalars = 0;
+    }
+    else {
+        nk_load_b32_serial_(a_scalars, &a_raw);
+        nk_load_b32_serial_(b_scalars, &b_raw);
+        a_scalars += 4, b_scalars += 4, count_scalars -= 4;
+    }
+    nk_b128_vec_t a_f32_vec = nk_e2m3x4_to_f32x4_v128relaxed_(a_raw);
+    nk_b128_vec_t b_f32_vec = nk_e2m3x4_to_f32x4_v128relaxed_(b_raw);
+    ab_f32x4 = wasm_f32x4_relaxed_madd(a_f32_vec.v128, b_f32_vec.v128, ab_f32x4);
+    a2_f32x4 = wasm_f32x4_relaxed_madd(a_f32_vec.v128, a_f32_vec.v128, a2_f32x4);
+    b2_f32x4 = wasm_f32x4_relaxed_madd(b_f32_vec.v128, b_f32_vec.v128, b2_f32x4);
+    if (count_scalars) goto nk_angular_e2m3_v128relaxed_cycle;
+
+    nk_f32_t ab = nk_reduce_add_f32x4_v128relaxed_(ab_f32x4);
+    nk_f32_t a2 = nk_reduce_add_f32x4_v128relaxed_(a2_f32x4);
+    nk_f32_t b2 = nk_reduce_add_f32x4_v128relaxed_(b2_f32x4);
+    *result = (nk_f32_t)nk_angular_normalize_f64_v128relaxed_((nk_f64_t)ab, (nk_f64_t)a2, (nk_f64_t)b2);
+}
+
+NK_PUBLIC void nk_sqeuclidean_e3m2_v128relaxed(nk_e3m2_t const *a, nk_e3m2_t const *b, nk_size_t n, nk_f32_t *result) {
+    v128_t sum_f32x4 = wasm_f32x4_splat(0.0f);
+    nk_e3m2_t const *a_scalars = a, *b_scalars = b;
+    nk_size_t count_scalars = n;
+    nk_b32_vec_t a_raw, b_raw;
+
+nk_sqeuclidean_e3m2_v128relaxed_cycle:
+    if (count_scalars < 4) {
+        a_raw = nk_partial_load_b8x4_serial_(a_scalars, count_scalars);
+        b_raw = nk_partial_load_b8x4_serial_(b_scalars, count_scalars);
+        count_scalars = 0;
+    }
+    else {
+        nk_load_b32_serial_(a_scalars, &a_raw);
+        nk_load_b32_serial_(b_scalars, &b_raw);
+        a_scalars += 4, b_scalars += 4, count_scalars -= 4;
+    }
+    nk_b128_vec_t a_f32_vec = nk_e3m2x4_to_f32x4_v128relaxed_(a_raw);
+    nk_b128_vec_t b_f32_vec = nk_e3m2x4_to_f32x4_v128relaxed_(b_raw);
+    v128_t diff_f32x4 = wasm_f32x4_sub(a_f32_vec.v128, b_f32_vec.v128);
+    sum_f32x4 = wasm_f32x4_relaxed_madd(diff_f32x4, diff_f32x4, sum_f32x4);
+    if (count_scalars) goto nk_sqeuclidean_e3m2_v128relaxed_cycle;
+
+    *result = nk_reduce_add_f32x4_v128relaxed_(sum_f32x4);
+}
+
+NK_PUBLIC void nk_euclidean_e3m2_v128relaxed(nk_e3m2_t const *a, nk_e3m2_t const *b, nk_size_t n, nk_f32_t *result) {
+    nk_sqeuclidean_e3m2_v128relaxed(a, b, n, result);
+    *result = nk_f32_sqrt_v128relaxed(*result);
+}
+
+NK_PUBLIC void nk_angular_e3m2_v128relaxed(nk_e3m2_t const *a, nk_e3m2_t const *b, nk_size_t n, nk_f32_t *result) {
+    v128_t ab_f32x4 = wasm_f32x4_splat(0.0f);
+    v128_t a2_f32x4 = wasm_f32x4_splat(0.0f);
+    v128_t b2_f32x4 = wasm_f32x4_splat(0.0f);
+    nk_e3m2_t const *a_scalars = a, *b_scalars = b;
+    nk_size_t count_scalars = n;
+    nk_b32_vec_t a_raw, b_raw;
+
+nk_angular_e3m2_v128relaxed_cycle:
+    if (count_scalars < 4) {
+        a_raw = nk_partial_load_b8x4_serial_(a_scalars, count_scalars);
+        b_raw = nk_partial_load_b8x4_serial_(b_scalars, count_scalars);
+        count_scalars = 0;
+    }
+    else {
+        nk_load_b32_serial_(a_scalars, &a_raw);
+        nk_load_b32_serial_(b_scalars, &b_raw);
+        a_scalars += 4, b_scalars += 4, count_scalars -= 4;
+    }
+    nk_b128_vec_t a_f32_vec = nk_e3m2x4_to_f32x4_v128relaxed_(a_raw);
+    nk_b128_vec_t b_f32_vec = nk_e3m2x4_to_f32x4_v128relaxed_(b_raw);
+    ab_f32x4 = wasm_f32x4_relaxed_madd(a_f32_vec.v128, b_f32_vec.v128, ab_f32x4);
+    a2_f32x4 = wasm_f32x4_relaxed_madd(a_f32_vec.v128, a_f32_vec.v128, a2_f32x4);
+    b2_f32x4 = wasm_f32x4_relaxed_madd(b_f32_vec.v128, b_f32_vec.v128, b2_f32x4);
+    if (count_scalars) goto nk_angular_e3m2_v128relaxed_cycle;
+
+    nk_f32_t ab = nk_reduce_add_f32x4_v128relaxed_(ab_f32x4);
+    nk_f32_t a2 = nk_reduce_add_f32x4_v128relaxed_(a2_f32x4);
+    nk_f32_t b2 = nk_reduce_add_f32x4_v128relaxed_(b2_f32x4);
+    *result = (nk_f32_t)nk_angular_normalize_f64_v128relaxed_((nk_f64_t)ab, (nk_f64_t)a2, (nk_f64_t)b2);
+}
+
+#pragma endregion FP8 Floats
+#pragma region Spatial From Dot Helpers
 
 /** @brief Angular from_dot: computes 1 − dot / √(query_sumsq × target_sumsq) for 4 pairs in f32. */
 NK_INTERNAL void nk_angular_through_f32_from_dot_v128relaxed_(nk_b128_vec_t dots, nk_f32_t query_sumsq,
@@ -437,8 +689,8 @@ NK_INTERNAL void nk_euclidean_through_u32_from_dot_v128relaxed_(nk_b128_vec_t do
     results->v128 = wasm_f32x4_sqrt(dist_sq_f32x4);
 }
 
-#pragma endregion - Spatial From - Dot Helpers
-#pragma region - Integer Spatial
+#pragma endregion Spatial From Dot Helpers
+#pragma region I8 and U8 Integers
 
 NK_PUBLIC void nk_sqeuclidean_u8_v128relaxed(nk_u8_t const *a, nk_u8_t const *b, nk_size_t n, nk_u32_t *result) {
     v128_t sum_u32x4 = wasm_u32x4_splat(0);
@@ -703,7 +955,7 @@ NK_PUBLIC void nk_angular_i8_v128relaxed(nk_i8_t const *a, nk_i8_t const *b, nk_
     *result = (nk_f32_t)nk_angular_normalize_f64_v128relaxed_(dot_ab, norm_aa, norm_bb);
 }
 
-#pragma endregion - Integer Spatial
+#pragma endregion I8 and U8 Integers
 
 #if defined(__clang__)
 #pragma clang attribute pop

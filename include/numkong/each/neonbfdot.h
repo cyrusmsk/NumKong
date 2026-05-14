@@ -13,7 +13,7 @@
  *      vst1_bf16      ST1 (V.4H)                 2cy @ 2p  2cy @ 3p
  *      vcvt_f32_bf16  BFCVTN (V.4H, V.4S)        3cy @ 2p  3cy @ 4p
  *      vcvt_bf16_f32  BFCVT (V.4H, V.4S)         3cy @ 2p  3cy @ 4p
- *      vaddq_f32      FADD (V.4S, V.4S, V.4S)    3cy @ 2p  2cy @ 4p
+ *      vaddq_f32      FADD (V.4S, V.4S, V.4S)    2cy @ 2p  2cy @ 4p
  *      vmulq_f32      FMUL (V.4S, V.4S, V.4S)    3cy @ 2p  3cy @ 4p
  *      vmulq_n_f32    FMUL (V.4S, V.4S, scalar)  3cy @ 2p  3cy @ 4p
  *      vfmaq_f32      FMLA (V.4S, V.4S, V.4S)    4cy @ 2p  3cy @ 4p
@@ -31,7 +31,7 @@
 #ifndef NK_EACH_NEONBFDOT_H
 #define NK_EACH_NEONBFDOT_H
 
-#if NK_TARGET_ARM_
+#if NK_TARGET_ARM64_
 #if NK_TARGET_NEONBFDOT
 
 #include "numkong/types.h"
@@ -207,5 +207,5 @@ NK_PUBLIC void nk_each_fma_bf16_neonbfdot(                      //
 #endif
 
 #endif // NK_TARGET_NEONBFDOT
-#endif // NK_TARGET_ARM_
+#endif // NK_TARGET_ARM64_
 #endif // NK_EACH_NEONBFDOT_H

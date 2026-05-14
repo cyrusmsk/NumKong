@@ -9,7 +9,7 @@
 #ifndef NK_SPATIALS_HASWELL_H
 #define NK_SPATIALS_HASWELL_H
 
-#if NK_TARGET_X86_
+#if NK_TARGET_X8664_
 #if NK_TARGET_HASWELL
 
 #include "numkong/spatial/haswell.h"
@@ -78,11 +78,11 @@ nk_define_cross_normalized_symmetric_(euclidean, f16, haswell, f16, f32, /*norm_
                                       nk_dots_reduce_sumsq_f16_, nk_load_b128_haswell_, nk_partial_load_b32x4_haswell_,
                                       nk_store_b128_haswell_, nk_partial_store_b32x4_haswell_, 1)
 
-nk_define_cross_normalized_packed_(angular, bf16, haswell, bf16, f32, f32, /*norm_value_type=*/f32, f32, nk_b128_vec_t,
+nk_define_cross_normalized_packed_(angular, bf16, haswell, bf16, bf16, f32, /*norm_value_type=*/f32, f32, nk_b128_vec_t,
                                    nk_dots_packed_bf16_haswell, nk_angular_through_f32_from_dot_haswell_,
                                    nk_dots_reduce_sumsq_bf16_, nk_load_b128_haswell_, nk_partial_load_b32x4_haswell_,
                                    nk_store_b128_haswell_, nk_partial_store_b32x4_haswell_, 1)
-nk_define_cross_normalized_packed_(euclidean, bf16, haswell, bf16, f32, f32, /*norm_value_type=*/f32, f32,
+nk_define_cross_normalized_packed_(euclidean, bf16, haswell, bf16, bf16, f32, /*norm_value_type=*/f32, f32,
                                    nk_b128_vec_t, nk_dots_packed_bf16_haswell,
                                    nk_euclidean_through_f32_from_dot_haswell_, nk_dots_reduce_sumsq_bf16_,
                                    nk_load_b128_haswell_, nk_partial_load_b32x4_haswell_, nk_store_b128_haswell_,
@@ -215,5 +215,5 @@ nk_define_cross_normalized_symmetric_(euclidean, u8, haswell, u8, u32, /*norm_va
 #endif
 
 #endif // NK_TARGET_HASWELL
-#endif // NK_TARGET_X86_
+#endif // NK_TARGET_X8664_
 #endif // NK_SPATIALS_HASWELL_H

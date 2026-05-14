@@ -71,6 +71,15 @@ NK_STATIC_ASSERT(sizeof(nk_maxsim_vector_metadata_t) == 12, nk_maxsim_vector_met
  */
 typedef void (*nk_maxsim_to_f32_t)(void const *source, nk_f32_t *destination);
 
+/*  Keep the serial instantiations below actually scalar, regardless of build type.
+ *  See dots/serial.h for rationale. */
+#if defined(__clang__)
+#pragma clang attribute push(__attribute__((noinline)), apply_to = function)
+#elif defined(__GNUC__)
+#pragma GCC push_options
+#pragma GCC optimize("no-tree-vectorize", "no-tree-slp-vectorize", "no-ipa-cp-clone", "no-inline")
+#endif
+
 /** @brief Identity conversion for f32 sources — just a typed memcpy. */
 NK_INTERNAL void nk_f32_to_f32_(void const *source, nk_f32_t *destination) { *destination = *(nk_f32_t const *)source; }
 
@@ -234,7 +243,7 @@ NK_PUBLIC nk_size_t nk_maxsim_packed_size_f32_serial(nk_size_t vector_count, nk_
 }
 
 NK_PUBLIC void nk_maxsim_pack_bf16_serial( //
-    nk_bf16_t const *vectors, nk_size_t vector_count, nk_size_t depth, nk_size_t stride, void *packed) {
+    nk_bf16_t const *vectors, nk_size_t vector_count, nk_size_t depth, nk_size_t stride_in_bytes, void *packed) {
 
     nk_size_t const element_bytes = sizeof(nk_bf16_t);
     nk_size_t depth_i8_padded = nk_maxsim_packed_header_setup_(packed, vector_count, depth, 1, element_bytes);
@@ -246,7 +255,7 @@ NK_PUBLIC void nk_maxsim_pack_bf16_serial( //
     nk_size_t const original_stride = header->original_stride_bytes;
 
     for (nk_size_t vector_index = 0; vector_index < vector_count; vector_index++) {
-        char const *source_row = (char const *)vectors + vector_index * stride;
+        char const *source_row = (char const *)vectors + vector_index * stride_in_bytes;
         nk_f32_t norm_sq;
         nk_maxsim_quantize_vector_(source_row, element_bytes, depth, depth_i8_padded, 127.0f,
                                    (nk_maxsim_to_f32_t)nk_bf16_to_f32_serial,
@@ -260,7 +269,7 @@ NK_PUBLIC void nk_maxsim_pack_bf16_serial( //
 }
 
 NK_PUBLIC void nk_maxsim_pack_f32_serial( //
-    nk_f32_t const *vectors, nk_size_t vector_count, nk_size_t depth, nk_size_t stride, void *packed) {
+    nk_f32_t const *vectors, nk_size_t vector_count, nk_size_t depth, nk_size_t stride_in_bytes, void *packed) {
 
     nk_size_t const element_bytes = sizeof(nk_f32_t);
     nk_size_t depth_i8_padded = nk_maxsim_packed_header_setup_(packed, vector_count, depth, 1, element_bytes);
@@ -272,7 +281,7 @@ NK_PUBLIC void nk_maxsim_pack_f32_serial( //
     nk_size_t const original_stride = header->original_stride_bytes;
 
     for (nk_size_t vector_index = 0; vector_index < vector_count; vector_index++) {
-        char const *source_row = (char const *)vectors + vector_index * stride;
+        char const *source_row = (char const *)vectors + vector_index * stride_in_bytes;
         nk_f32_t norm_sq;
         nk_maxsim_quantize_vector_(source_row, element_bytes, depth, depth_i8_padded, 127.0f, nk_f32_to_f32_,
                                    &quantized_i8[vector_index * depth_i8_padded], &metadata[vector_index], &norm_sq);
@@ -289,7 +298,7 @@ NK_PUBLIC nk_size_t nk_maxsim_packed_size_f16_serial(nk_size_t vector_count, nk_
 }
 
 NK_PUBLIC void nk_maxsim_pack_f16_serial( //
-    nk_f16_t const *vectors, nk_size_t vector_count, nk_size_t depth, nk_size_t stride, void *packed) {
+    nk_f16_t const *vectors, nk_size_t vector_count, nk_size_t depth, nk_size_t stride_in_bytes, void *packed) {
 
     nk_size_t const element_bytes = sizeof(nk_f16_t);
     nk_size_t depth_i8_padded = nk_maxsim_packed_header_setup_(packed, vector_count, depth, 1, element_bytes);
@@ -301,7 +310,7 @@ NK_PUBLIC void nk_maxsim_pack_f16_serial( //
     nk_size_t const original_stride = header->original_stride_bytes;
 
     for (nk_size_t vector_index = 0; vector_index < vector_count; vector_index++) {
-        char const *source_row = (char const *)vectors + vector_index * stride;
+        char const *source_row = (char const *)vectors + vector_index * stride_in_bytes;
         nk_f32_t norm_sq;
         nk_maxsim_quantize_vector_(source_row, element_bytes, depth, depth_i8_padded, 127.0f,
                                    (nk_maxsim_to_f32_t)nk_f16_to_f32_serial,
@@ -482,6 +491,12 @@ NK_PUBLIC void nk_maxsim_packed_f16_serial( //
 
     *result = (nk_f32_t)total_angular_distance;
 }
+
+#if defined(__clang__)
+#pragma clang attribute pop
+#elif defined(__GNUC__)
+#pragma GCC pop_options
+#endif
 
 #if defined(__cplusplus)
 } // extern "C"

@@ -12,6 +12,10 @@
 build-backend = "setuptools.build_meta"
 requires = ["setuptools>=42"]
 
+[tool.pyright]
+extraPaths = ["test"]
+stubPath = "python"
+
 [tool.pytest.ini_options]
 addopts = ["-ra", "--showlocals", "--strict-markers", "--strict-config"]
 filterwarnings = ["error"]
@@ -55,12 +59,20 @@ skip = [] # we also don't use any SIMD on: ["*s390x*", "*ppc64le*"]
 environment-pass = [
   "NK_IN_QEMU",
   "NK_SEED",
+  "NK_FILTER",
+  "NK_BUDGET_SECS",
   "NK_REPETITIONS",
   "NK_DENSE_DIMENSIONS",
   "NK_CURVED_DIMENSIONS",
+  "NK_SPARSE_DIMENSIONS",
+  "NK_MESH_POINTS",
   "NK_MATRIX_HEIGHT",
   "NK_MATRIX_WIDTH",
   "NK_MATRIX_DEPTH",
+  "NK_MAX_COORD_ANGLE",
+  "NK_RANDOM_DISTRIBUTION",
+  "NK_TEST_ASSERT",
+  "NK_TEST_VERBOSE",
 ]
 
 [tool.cibuildwheel.environment]
@@ -70,6 +82,17 @@ NK_IN_QEMU = "1"
 [tool.cibuildwheel.linux]
 before-build = ["rm -rf {project}/build"]
 repair-wheel-command = "auditwheel repair -w {dest_dir} {wheel}"
+
+# Pin the platform tag on manylinux_2_28 architectures to avoid verbose
+# triple-tagged filenames (e.g., manylinux2014.manylinux_2_17.manylinux_2_28).
+# Other architectures (i686, ppc64le, s390x) use older images and keep the default.
+[[tool.cibuildwheel.overrides]]
+repair-wheel-command = "auditwheel repair --plat manylinux_2_28_x86_64 --only-plat -w {dest_dir} {wheel}"
+select = "*-manylinux*_x86_64"
+
+[[tool.cibuildwheel.overrides]]
+repair-wheel-command = "auditwheel repair --plat manylinux_2_28_aarch64 --only-plat -w {dest_dir} {wheel}"
+select = "*-manylinux*_aarch64"
 
 # Use more recent images for the most popular SIMD-capable CPU architectures, to have access to newer compilers.
 # Otherwise, prepare yourself to all kinds of AVX-512 issues and other SIMD-related pain.
@@ -104,6 +127,48 @@ before-all = "apk add --update wget python3-dev"
 select = "*-musllinux*"
 
 [tool.cibuildwheel.macos]
+# Apple Clang ships no `omp.h` / `libomp`. `brew install libomp` alone is not
+# enough: the Homebrew bottle targets the runner's OS (e.g. macOS 26 on the
+# `macos-26` runner image), while the wheel targets `MACOSX_DEPLOYMENT_TARGET`
+# (typically 11.0), so `delocate-wheel` refuses to bundle it:
+#
+#     delocate.libsana.DelocationError: Library dependencies do not satisfy
+#     target MacOS version 11.0: libomp.dylib has a minimum target of 26.0
+#
+# So we install the brew keg first (for the symlinks `setup.py:darwin_settings`
+# reads via `brew --prefix libomp`), then overwrite `lib/` and `include/`
+# with a CMake build of LLVM's `openmp` pinned to the wheel's deployment
+# target. Once `delocate` bundles that into the wheel,
+# `python/numkong/__init__.py` sets `KMP_DUPLICATE_LIB_OK=TRUE` so the
+# bundled runtime coexists with NumPy/SciPy's OpenMP in the same process.
+before-all = [
+    """
+    set -euo pipefail
+    LLVM_VERSION=${LIBOMP_LLVM_VERSION:-20.1.0}
+    TARGET=${MACOSX_DEPLOYMENT_TARGET:-11.0}
+    brew install libomp
+    PREFIX=$(brew --prefix libomp)
+    work=$(mktemp -d)
+    cd "$work"
+    base=https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVM_VERSION}
+    curl -fsSL -o openmp.tar.xz "${base}/openmp-${LLVM_VERSION}.src.tar.xz"
+    curl -fsSL -o cmake.tar.xz  "${base}/cmake-${LLVM_VERSION}.src.tar.xz"
+    tar -xf openmp.tar.xz
+    tar -xf cmake.tar.xz
+    mv "cmake-${LLVM_VERSION}.src" cmake
+    cd "openmp-${LLVM_VERSION}.src"
+    cmake -S . -B build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_OSX_DEPLOYMENT_TARGET="${TARGET}" \
+        -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
+        -DCMAKE_INSTALL_PREFIX="${PREFIX}" \
+        -DCMAKE_INSTALL_NAME_DIR="${PREFIX}/lib" \
+        -DLIBOMP_INSTALL_ALIASES=OFF \
+        -DOPENMP_ENABLE_LIBOMPTARGET=OFF
+    cmake --build build --parallel
+    cmake --install build
+    """,
+]
 before-build = ["rm -rf {project}/build"]
 repair-wheel-command = "delocate-wheel --require-archs {delocate_archs} -w {dest_dir} -v {wheel}"
 
@@ -129,51 +194,51 @@ test-command = """
 
 # x86-64 builds
 [[tool.cibuildwheel.overrides]]
-environment.NK_TARGET_ARM_ = "0"
-environment.NK_TARGET_X86_ = "1"
+environment.NK_TARGET_ARM64_ = "0"
+environment.NK_TARGET_X8664_ = "1"
 inherit.environment = "append"
 select = "*-win_amd64"
 
 [[tool.cibuildwheel.overrides]]
-environment.NK_TARGET_ARM_ = "0"
-environment.NK_TARGET_X86_ = "1"
+environment.NK_TARGET_ARM64_ = "0"
+environment.NK_TARGET_X8664_ = "1"
 inherit.environment = "append"
 select = "*-manylinux*_x86_64"
 
 [[tool.cibuildwheel.overrides]]
-environment.NK_TARGET_ARM_ = "0"
-environment.NK_TARGET_X86_ = "1"
+environment.NK_TARGET_ARM64_ = "0"
+environment.NK_TARGET_X8664_ = "1"
 inherit.environment = "append"
 select = "*-musllinux*_x86_64"
 
 [[tool.cibuildwheel.overrides]]
-environment.NK_TARGET_ARM_ = "0"
-environment.NK_TARGET_X86_ = "1"
+environment.NK_TARGET_ARM64_ = "0"
+environment.NK_TARGET_X8664_ = "1"
 inherit.environment = "append"
 select = "*-macos*_x86_64"
 
 # ARM64 builds
 [[tool.cibuildwheel.overrides]]
-environment.NK_TARGET_ARM_ = "1"
-environment.NK_TARGET_X86_ = "0"
+environment.NK_TARGET_ARM64_ = "1"
+environment.NK_TARGET_X8664_ = "0"
 inherit.environment = "append"
 select = "*-win_arm64"
 
 [[tool.cibuildwheel.overrides]]
-environment.NK_TARGET_ARM_ = "1"
-environment.NK_TARGET_X86_ = "0"
+environment.NK_TARGET_ARM64_ = "1"
+environment.NK_TARGET_X8664_ = "0"
 inherit.environment = "append"
 select = "*-manylinux*_aarch64"
 
 [[tool.cibuildwheel.overrides]]
-environment.NK_TARGET_ARM_ = "1"
-environment.NK_TARGET_X86_ = "0"
+environment.NK_TARGET_ARM64_ = "1"
+environment.NK_TARGET_X8664_ = "0"
 inherit.environment = "append"
 select = "*-musllinux*_aarch64"
 
 [[tool.cibuildwheel.overrides]]
-environment.NK_TARGET_ARM_ = "1"
-environment.NK_TARGET_X86_ = "0"
+environment.NK_TARGET_ARM64_ = "1"
+environment.NK_TARGET_X8664_ = "0"
 inherit.environment = "append"
 select = "*-macos*_arm64"
 
@@ -187,9 +252,9 @@ select = "*-macos*_arm64"
 # environment.CC = "clang"
 # environment.CXX = "clang++"
 # environment.LDFLAGS = "-fuse-ld=lld"
-# environment.NK_TARGET_ARM_ = "0"
-# environment.NK_TARGET_RISCV_ = "1"
-# environment.NK_TARGET_X86_ = "0"
+# environment.NK_TARGET_ARM64_ = "0"
+# environment.NK_TARGET_RISCV64_ = "1"
+# environment.NK_TARGET_X8664_ = "0"
 # inherit.environment = "append"
 # select = "*-manylinux*_riscv64"
 #
@@ -198,9 +263,9 @@ select = "*-macos*_arm64"
 # environment.CC = "clang"
 # environment.CXX = "clang++"
 # environment.LDFLAGS = "-fuse-ld=lld"
-# environment.NK_TARGET_ARM_ = "0"
-# environment.NK_TARGET_RISCV_ = "1"
-# environment.NK_TARGET_X86_ = "0"
+# environment.NK_TARGET_ARM64_ = "0"
+# environment.NK_TARGET_RISCV64_ = "1"
+# environment.NK_TARGET_X8664_ = "0"
 # inherit.environment = "append"
 # select = "*-musllinux*_riscv64"
 

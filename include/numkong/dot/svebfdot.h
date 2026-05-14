@@ -27,10 +27,11 @@
 #ifndef NK_DOT_SVEBFDOT_H
 #define NK_DOT_SVEBFDOT_H
 
-#if NK_TARGET_ARM_
+#if NK_TARGET_ARM64_
 #if NK_TARGET_SVEBFDOT
 
 #include "numkong/types.h"
+#include "numkong/reduce/sve.h" // `nk_svaddv_f64_`
 
 #if defined(__cplusplus)
 extern "C" {
@@ -50,13 +51,13 @@ NK_PUBLIC void nk_dot_bf16_svebfdot(nk_bf16_t const *a_scalars, nk_bf16_t const 
     nk_bf16_for_arm_simd_t const *a = (nk_bf16_for_arm_simd_t const *)(a_scalars);
     nk_bf16_for_arm_simd_t const *b = (nk_bf16_for_arm_simd_t const *)(b_scalars);
     do {
-        svbool_t predicate_bf16x = svwhilelt_b16_u64(idx_scalars, count_scalars);
-        svbfloat16_t a_bf16x = svld1_bf16(predicate_bf16x, a + idx_scalars);
-        svbfloat16_t b_bf16x = svld1_bf16(predicate_bf16x, b + idx_scalars);
+        svbool_t predicate_b16x = svwhilelt_b16_u64(idx_scalars, count_scalars);
+        svbfloat16_t a_bf16x = svld1_bf16(predicate_b16x, a + idx_scalars);
+        svbfloat16_t b_bf16x = svld1_bf16(predicate_b16x, b + idx_scalars);
         sum_f32x = svbfdot_f32(sum_f32x, a_bf16x, b_bf16x);
         idx_scalars += svcnth();
     } while (idx_scalars < count_scalars);
-    *result = svaddv_f32(svptrue_b32(), sum_f32x);
+    *result = nk_svaddv_f32_(svptrue_b32(), sum_f32x);
 }
 
 #if defined(__clang__)
@@ -70,5 +71,5 @@ NK_PUBLIC void nk_dot_bf16_svebfdot(nk_bf16_t const *a_scalars, nk_bf16_t const 
 #endif
 
 #endif // NK_TARGET_SVEBFDOT
-#endif // NK_TARGET_ARM_
+#endif // NK_TARGET_ARM64_
 #endif // NK_DOT_SVEBFDOT_H

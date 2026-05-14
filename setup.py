@@ -11,9 +11,10 @@ from __future__ import annotations
 import glob
 import os
 import platform
-import re
 import subprocess
 import sys
+import sysconfig
+import tempfile
 from pathlib import Path
 
 from setuptools import Extension, setup
@@ -31,7 +32,7 @@ if sys.platform == "darwin":
 
 def is_64bit_x86() -> bool:
     """Detect x86-64 architecture with environment override support."""
-    override = os.environ.get("NK_TARGET_X86_")
+    override = os.environ.get("NK_TARGET_X8664_")
     if override is not None:
         return override == "1"
     arch = platform.machine().lower()
@@ -40,7 +41,7 @@ def is_64bit_x86() -> bool:
 
 def is_64bit_arm() -> bool:
     """Detect ARM64 architecture with environment override support."""
-    override = os.environ.get("NK_TARGET_ARM_")
+    override = os.environ.get("NK_TARGET_ARM64_")
     if override is not None:
         return override == "1"
     arch = platform.machine().lower()
@@ -49,42 +50,223 @@ def is_64bit_arm() -> bool:
 
 def is_64bit_riscv() -> bool:
     """Detect RISC-V 64-bit architecture with environment override support."""
-    override = os.environ.get("NK_TARGET_RISCV_")
+    override = os.environ.get("NK_TARGET_RISCV64_")
     if override is not None:
         return override == "1"
     arch = platform.machine().lower()
     return (arch in ("riscv64",)) and (sys.maxsize > 2**32)
 
 
-def has_darwin_sme_support() -> bool:
-    """Check whether the host compiler supports the AArch64 SME ABI on Darwin.
+def is_64bit_loongarch() -> bool:
+    """Detect LoongArch 64-bit architecture with environment override support."""
+    override = os.environ.get("NK_TARGET_LOONGARCH64_")
+    if override is not None:
+        return override == "1"
+    arch = platform.machine().lower()
+    return (arch in ("loongarch64",)) and (sys.maxsize > 2**32)
 
-    Apple Clang (Xcode 16+, AppleClang 16+) backported the Darwin SME ABI.
-    Upstream LLVM only gained Darwin SME ABI support in version 19, so
-    Homebrew / upstream Clang 18 will crash with:
-      "Calling convention AArch64_SME_ABI_Support_Routines_PreserveMost_From_X0
-       is unsupported on Darwin."
+
+def is_64bit_power() -> bool:
+    """Detect Power 64-bit architecture with environment override support."""
+    override = os.environ.get("NK_TARGET_POWER64_")
+    if override is not None:
+        return override == "1"
+    arch = platform.machine().lower()
+    return (arch in ("ppc64le", "ppc64", "powerpc64le", "powerpc64")) and (sys.maxsize > 2**32)
+
+
+def march_baseline_args() -> list[str]:
+    """TU-level baseline: ISA floor + auto-vectorizer lockdown.
+
+    Keeps serial kernels serial — auto-vec would otherwise promote fallbacks to
+    NEON/SSE2/VSX. SIMD kernels use explicit intrinsics; unaffected. MSVC has no
+    command-line vectorizer toggle. `NK_MARCH_NATIVE=1` opts out (non-MSVC).
+
+    Keep per-arch table in sync with cmake/nk_compiler_flags.cmake, build.rs, binding.gyp.
     """
-    if not is_64bit_arm():
-        return False
+    msvc = sys.platform == "win32"
+    if msvc:
+        if is_64bit_x86():
+            return ["/arch:SSE2"]
+        if is_64bit_arm():
+            return ["/arch:armv8.0"]
+        return []
+    if os.environ.get("NK_MARCH_NATIVE") in ("1", "true", "TRUE"):
+        print("[NumKong] NK_MARCH_NATIVE=1: building -march=native, result will not run on older CPUs")
+        return ["-march=native"]
+    no_vectorize = ["-fno-tree-vectorize", "-fno-tree-slp-vectorize"]
+    # On macOS, `-arch arm64`/`-arch x86_64` already pins the ABI floor, and
+    # universal2 wheels pass both `-arch` flags to a single clang invocation —
+    # a per-arch `-march=` would then conflict with the other slice (e.g.
+    # `-march=armv8-a` is rejected by the x86_64 compile). Let Apple's `-arch`
+    # drive the baseline and keep only the auto-vectorizer lockdown.
+    if sys.platform == "darwin":
+        return no_vectorize
+    if is_64bit_arm():
+        return ["-march=armv8-a"] + no_vectorize
+    if is_64bit_x86():
+        return ["-march=x86-64"] + no_vectorize
+    if is_64bit_riscv():
+        return ["-march=rv64gc"] + no_vectorize
+    if is_64bit_power():
+        return ["-mcpu=power8"] + no_vectorize
+    if is_64bit_loongarch():
+        # LASX needs TU-level `-mlasx` until GCC >= 15 / Clang >= 22 ship per-function support.
+        return ["-march=loongarch64", "-mlasx"] + no_vectorize
+    return no_vectorize
+
+
+def is_wasm() -> bool:
+    """Detect WASM/Emscripten target."""
+    host = os.environ.get("_PYTHON_HOST_PLATFORM", "")
+    return "emscripten" in host or "wasm" in host
+
+
+def detect_cc():
+    """Detect the C compiler."""
+    if sys.platform == "win32":
+        return ("cl.exe", True)
+    cc = os.environ.get("CC") or sysconfig.get_config_var("CC") or "cc"
+    return (cc.split()[0], False)
+
+
+def cross_target_flags() -> list[str]:
+    """Return --target flags when cross-compiling on macOS."""
+    if sys.platform != "darwin":
+        return []
+    host = platform.machine().lower()
+    if is_64bit_x86() and host in ("arm64", "aarch64"):
+        return ["--target=x86_64-apple-darwin"]
+    if is_64bit_arm() and host in ("x86_64", "amd64", "x64"):
+        return ["--target=arm64-apple-darwin"]
+    return []
+
+
+def probe_isa(cc, probe_file, flags, is_msvc=False):
+    """Try to compile a probe .c file. Returns True if compiler supports this ISA."""
+    with tempfile.NamedTemporaryFile(suffix=".obj" if is_msvc else ".o", delete=False) as tmp:
+        obj_path = tmp.name
     try:
-        result = subprocess.run(["clang", "--version"], capture_output=True, text=True)
-        output = result.stdout
-        for line in output.split("\n"):
-            if "version" not in line.lower():
-                continue
-            match = re.search(r"version\s+(\d+)\.(\d+)", line)
-            if not match:
-                continue
-            major = int(match.group(1))
-            # Apple Clang identifies itself with "Apple" in the version string
-            if "Apple" in output:
-                return major >= 16
-            # Upstream / Homebrew LLVM: Darwin SME ABI landed in LLVM 19
-            return major >= 19
+        prefix = [cc, "/c"] if is_msvc else [cc, "-c"]
+        out_flag = ["/Fo" + obj_path] if is_msvc else ["-o", obj_path]
+        extra = [] if is_msvc else cross_target_flags()
+        return subprocess.run(prefix + extra + flags + [probe_file] + out_flag, capture_output=True, timeout=30).returncode == 0
     except Exception:
-        pass
-    return False
+        return False
+    finally:
+        try:
+            os.unlink(obj_path)
+        except OSError:
+            pass
+
+
+ProbeTable = list[tuple[str, str, list[str], list[str]]]
+
+# Probe table: (NK_TARGET_NAME, probe_file, gcc_flags, msvc_flags)
+# The probe files contain #error guards for unsupported OS/runtime combinations,
+# so we do not need per-platform override logic.
+# x86 probes: GCC flags are minimal — each implies its prerequisites.
+# E.g., -mavx512vnni implies -mavx512f; -mavxvnni implies -mavx2.
+PROBE_TABLE_X86: ProbeTable = [
+    ("HASWELL", "probes/x86_haswell.c", ["-mavx2", "-mfma", "-mf16c"], ["/arch:AVX2"]),
+    ("SKYLAKE", "probes/x86_skylake.c", ["-mavx512f", "-mavx512bw", "-mavx512dq", "-mavx512vl"], ["/arch:AVX512"]),
+    ("ICELAKE", "probes/x86_icelake.c", ["-mavx512vnni", "-mavx512vl"], ["/arch:AVX512"]),
+    ("GENOA", "probes/x86_genoa.c", ["-mavx512bf16", "-mavx512vl"], ["/arch:AVX512"]),
+    ("SAPPHIRE", "probes/x86_sapphire.c", ["-mavx512fp16", "-mavx512vl"], ["/arch:AVX512"]),
+    ("SAPPHIREAMX", "probes/x86_sapphireamx.c", ["-mamx-tile", "-mamx-int8"], ["/arch:AVX512"]),
+    ("GRANITEAMX", "probes/x86_graniteamx.c", ["-mamx-tile", "-mamx-fp16"], ["/arch:AVX512"]),
+    ("DIAMOND", "probes/x86_diamond.c", ["-mavx10.2-512"], ["/arch:AVX10.2"]),
+    ("TURIN", "probes/x86_turin.c", ["-mavx512vp2intersect"], ["/arch:AVX512"]),
+    ("ALDER", "probes/x86_alder.c", ["-mavxvnni"], ["/arch:AVX2"]),
+    ("SIERRA", "probes/x86_sierra.c", ["-mavxvnniint8"], ["/arch:AVX2"]),
+]
+
+# ARM probes: msvc_flags are empty because MSVC does not define __ARM_FEATURE_*
+# macros via /arch: flags. For MSVC header-only builds, types.h infers features
+# from __ARM_ARCH level instead. SVE/SME probes also have #error guards for _WIN32.
+PROBE_TABLE_ARM: ProbeTable = [
+    # FEAT_AdvSIMD
+    ("NEON", "probes/arm_neon.c", ["-march=armv8-a+simd"], []),
+    ("NEONHALF", "probes/arm_neon_half.c", ["-march=armv8.2-a+simd+fp16"], ["/arch:armv8.2"]),  # FEAT_FP16
+    ("NEONSDOT", "probes/arm_neon_sdot.c", ["-march=armv8.2-a+dotprod"], ["/arch:armv8.4"]),  # FEAT_DotProd
+    ("NEONBFDOT", "probes/arm_neon_bfdot.c", ["-march=armv8.6-a+simd+bf16"], ["/arch:armv8.6"]),  # FEAT_BF16
+    ("NEONFHM", "probes/arm_neon_fhm.c", ["-march=armv8.2-a+simd+fp16+fp16fml"], ["/arch:armv8.4"]),  # FEAT_FHM
+    ("NEONFP8", "probes/arm_neonfp8.c", ["-march=armv8-a+simd+fp8dot4"], []),
+    ("SVE", "probes/arm_sve.c", ["-march=armv8.2-a+sve"], []),
+    ("SVEHALF", "probes/arm_sve_half.c", ["-march=armv8.2-a+sve+fp16"], []),
+    ("SVEBFDOT", "probes/arm_sve_bfdot.c", ["-march=armv8.2-a+sve+bf16"], []),
+    ("SVESDOT", "probes/arm_sve_sdot.c", ["-march=armv8.2-a+sve+dotprod"], []),
+    ("SVE2", "probes/arm_sve2.c", ["-march=armv8.2-a+sve2"], []),
+    ("SVE2P1", "probes/arm_sve2p1.c", ["-march=armv8.2-a+sve2p1"], []),
+    ("SME", "probes/arm_sme.c", ["-march=armv8-a+sme"], []),
+    ("SME2", "probes/arm_sme2.c", ["-march=armv8-a+sme2"], []),
+    ("SME2P1", "probes/arm_sme2p1.c", ["-march=armv8-a+sme2p1"], []),
+    ("SMEF64", "probes/arm_sme_f64.c", ["-march=armv8-a+sme+sme-f64f64"], []),
+    ("SMEHALF", "probes/arm_sme_half.c", ["-march=armv8-a+sme+sme-f16f16"], []),
+    ("SMEBF16", "probes/arm_sme_bf16.c", ["-march=armv8-a+sme2+sme-b16b16"], []),
+    ("SMEBI32", "probes/arm_sme_bi32.c", ["-march=armv8-a+sme2"], []),
+    ("SMELUT2", "probes/arm_sme_lut2.c", ["-march=armv8-a+sme2+lut"], []),
+    ("SMEFA64", "probes/arm_sme_fa64.c", ["-march=armv8-a+sme+sme-fa64"], []),
+]
+
+PROBE_TABLE_RISCV: ProbeTable = [
+    ("RVV", "probes/riscv_rvv.c", ["-march=rv64gcv"], []),
+    ("RVVHALF", "probes/riscv_rvv_half.c", ["-march=rv64gcv_zvfh"], []),
+    ("RVVBF16", "probes/riscv_rvv_bf16.c", ["-march=rv64gcv_zvfbfwma"], []),
+    ("RVVBB", "probes/riscv_rvv_bb.c", ["-march=rv64gcv_zvbb"], []),
+]
+
+PROBE_TABLE_LOONGARCH: ProbeTable = [
+    ("LOONGSONASX", "probes/loongarch_lasx.c", ["-mlasx"], []),
+]
+
+PROBE_TABLE_POWER: ProbeTable = [
+    ("POWERVSX", "probes/power_vsx.c", ["-mcpu=power9", "-mvsx"], []),
+]
+
+PROBE_TABLE_WASM: ProbeTable = [
+    ("V128RELAXED", "probes/wasm_v128relaxed.c", ["-mrelaxed-simd"], []),
+]
+
+
+def probe_all_isas() -> list[tuple[str, str]]:
+    """Probe all ISAs relevant to the current architecture. Returns macro list."""
+    cc, is_msvc = detect_cc()
+    macros: list[tuple[str, str]] = []
+
+    tables: list[tuple[bool, ProbeTable]] = [
+        (is_64bit_x86(), PROBE_TABLE_X86),
+        (is_64bit_arm(), PROBE_TABLE_ARM),
+        (is_64bit_riscv(), PROBE_TABLE_RISCV),
+        (is_64bit_loongarch(), PROBE_TABLE_LOONGARCH),
+        (is_64bit_power(), PROBE_TABLE_POWER),
+        (is_wasm(), PROBE_TABLE_WASM),
+    ]
+
+    for arch_match, table in tables:
+        for name, probe_file, gcc_flags, msvc_flags in table:
+            if arch_match and os.path.isfile(probe_file):
+                # Allow env-var override: NK_TARGET_FOO=1/true forces on, =0/false forces off
+                env_val = os.environ.get(f"NK_TARGET_{name}", "").lower()
+                if env_val in ("1", "true"):
+                    macros.append((f"NK_TARGET_{name}", "1"))
+                    print(f"[NumKong] NK_TARGET_{name}: force-enabled via environment")
+                    continue
+                if env_val in ("0", "false"):
+                    macros.append((f"NK_TARGET_{name}", "0"))
+                    print(f"[NumKong] NK_TARGET_{name}: force-disabled via environment")
+                    continue
+                flags = msvc_flags if is_msvc else gcc_flags
+                ok = probe_isa(cc, probe_file, flags, is_msvc)
+                macros.append((f"NK_TARGET_{name}", "1" if ok else "0"))
+                if ok:
+                    print(f"[NumKong] Probe NK_TARGET_{name}: supported")
+                else:
+                    print(f"[NumKong] Probe NK_TARGET_{name}: not supported")
+            else:
+                macros.append((f"NK_TARGET_{name}", "0"))
+
+    return macros
 
 
 def linux_settings() -> tuple[list[str], list[str], list[tuple[str, str]]]:
@@ -92,68 +274,25 @@ def linux_settings() -> tuple[list[str], list[str], list[tuple[str, str]]]:
     compile_args = [
         "-std=c11",
         "-O3",
+        "-fopenmp",
         "-fdiagnostics-color=always",
         "-fvisibility=default",
         "-fPIC",
         "-w",  # Hush warnings
+        *march_baseline_args(),
     ]
-    # On RISC-V, GCC needs `-march` with the V extension for vector types to be
-    # available at translation-unit scope (`#pragma GCC target` only affects
-    # codegen, not type declarations).
-    # Keep the module-wide baseline portable (`rv64gcv`) so wheels can import on
-    # weaker emulated CPUs. Richer kernels still compile through the explicit
-    # NK_TARGET_* defines below plus per-function target attributes.
-    if is_64bit_riscv():
-        compile_args.append("-march=rv64gcv")
     link_args = [
         "-shared",
+        "-fopenmp",
         "-lm",  # Add vectorized `logf` implementation from the `glibc`
     ]
-    # On Linux with GCC, enable all SIMD targets for the detected architecture
-    macros = [
+    macros: list[tuple[str, str]] = [
         ("NK_DYNAMIC_DISPATCH", "1"),
+        ("NK_USE_OPENMP", "1"),
         ("NK_NATIVE_F16", "0"),
         ("NK_NATIVE_BF16", "0"),
-        # x86 targets
-        ("NK_TARGET_HASWELL", "1" if is_64bit_x86() else "0"),
-        ("NK_TARGET_SKYLAKE", "1" if is_64bit_x86() else "0"),
-        ("NK_TARGET_ICELAKE", "1" if is_64bit_x86() else "0"),
-        ("NK_TARGET_GENOA", "1" if is_64bit_x86() else "0"),
-        ("NK_TARGET_SAPPHIRE", "1" if is_64bit_x86() else "0"),
-        ("NK_TARGET_TURIN", "1" if is_64bit_x86() else "0"),
-        ("NK_TARGET_ALDER", "1" if is_64bit_x86() else "0"),
-        ("NK_TARGET_SIERRA", "1" if is_64bit_x86() else "0"),
-        ("NK_TARGET_SAPPHIREAMX", "1" if is_64bit_x86() else "0"),
-        ("NK_TARGET_GRANITEAMX", "1" if is_64bit_x86() else "0"),
-        # ARM NEON targets
-        ("NK_TARGET_NEON", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_NEONHALF", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_NEONSDOT", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_NEONBFDOT", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_NEONFHM", "1" if is_64bit_arm() else "0"),
-        # ARM SVE targets
-        ("NK_TARGET_SVE", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_SVEHALF", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_SVEBFDOT", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_SVESDOT", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_SVE2", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_SVE2P1", "1" if is_64bit_arm() else "0"),
-        # ARM SME targets
-        ("NK_TARGET_SME", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_SME2", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_SME2P1", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_SMEF64", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_SMEHALF", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_SMEBF16", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_SMEBI32", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_SMELUT2", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_SMEFA64", "1" if is_64bit_arm() else "0"),
-        # RISC-V targets
-        ("NK_TARGET_RVV", "1" if is_64bit_riscv() else "0"),
-        ("NK_TARGET_RVVHALF", "1" if is_64bit_riscv() else "0"),
-        ("NK_TARGET_RVVBF16", "1" if is_64bit_riscv() else "0"),
-        ("NK_TARGET_RVVBB", "1" if is_64bit_riscv() else "0"),
     ]
+    macros.extend(probe_all_isas())
     return compile_args, link_args, macros
 
 
@@ -162,56 +301,34 @@ def darwin_settings() -> tuple[list[str], list[str], list[tuple[str, str]]]:
     compile_args = [
         "-std=c11",
         "-O3",
+        "-Xpreprocessor",
+        "-fopenmp",
         "-w",  # Hush warnings
+        *march_baseline_args(),
     ]
-    link_args: list[str] = []
-    # SME available on M4+ with AppleClang 16+ (Xcode 16) or upstream Clang 19+
-    has_sme = has_darwin_sme_support()
-    # macOS: no SVE, conservative AVX-512 (not widely available)
-    macros = [
+    link_args: list[str] = ["-lomp"]
+    # Apple Clang ships no `omp.h` / `libomp`; point at the Homebrew-installed
+    # libomp so `#include <omp.h>` resolves and the linker finds `-lomp`.
+    # `delocate` bundles `libomp.dylib` into the wheel; at import time we set
+    # `KMP_DUPLICATE_LIB_OK=TRUE` (see `python/numkong/__init__.py`) so the
+    # bundled runtime coexists with any libomp that NumPy/SciPy already loaded.
+    try:
+        libomp_prefix = subprocess.run(
+            ["brew", "--prefix", "libomp"],
+            capture_output=True, text=True, timeout=10, check=True,
+        ).stdout.strip()
+    except (subprocess.SubprocessError, FileNotFoundError):
+        libomp_prefix = ""
+    if libomp_prefix and Path(libomp_prefix).exists():
+        compile_args.append(f"-I{libomp_prefix}/include")
+        link_args.append(f"-L{libomp_prefix}/lib")
+    macros: list[tuple[str, str]] = [
         ("NK_DYNAMIC_DISPATCH", "1"),
+        ("NK_USE_OPENMP", "1"),
         ("NK_NATIVE_F16", "0"),
         ("NK_NATIVE_BF16", "0"),
-        # x86 targets - conservative for macOS compatibility
-        ("NK_TARGET_HASWELL", "1" if is_64bit_x86() else "0"),
-        ("NK_TARGET_SKYLAKE", "0"),  # AVX-512 not common on Mac
-        ("NK_TARGET_ICELAKE", "0"),
-        ("NK_TARGET_GENOA", "0"),
-        ("NK_TARGET_SAPPHIRE", "0"),
-        ("NK_TARGET_TURIN", "0"),
-        ("NK_TARGET_ALDER", "0"),
-        ("NK_TARGET_SIERRA", "0"),
-        ("NK_TARGET_SAPPHIREAMX", "0"),
-        ("NK_TARGET_GRANITEAMX", "0"),
-        # ARM NEON targets - NEON only on Apple Silicon
-        ("NK_TARGET_NEON", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_NEONHALF", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_NEONSDOT", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_NEONBFDOT", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_NEONFHM", "1" if is_64bit_arm() else "0"),
-        # ARM SVE targets - not available on Apple Silicon
-        ("NK_TARGET_SVE", "0"),
-        ("NK_TARGET_SVEHALF", "0"),
-        ("NK_TARGET_SVEBFDOT", "0"),
-        ("NK_TARGET_SVESDOT", "0"),
-        ("NK_TARGET_SVE2", "0"),
-        ("NK_TARGET_SVE2P1", "0"),
-        # ARM SME targets - M4+ with AppleClang 16+ (Xcode 16)
-        ("NK_TARGET_SME", "1" if has_sme else "0"),
-        ("NK_TARGET_SME2", "1" if has_sme else "0"),
-        ("NK_TARGET_SME2P1", "1" if has_sme else "0"),
-        ("NK_TARGET_SMEF64", "1" if has_sme else "0"),
-        ("NK_TARGET_SMEHALF", "1" if has_sme else "0"),
-        ("NK_TARGET_SMEBF16", "1" if has_sme else "0"),
-        ("NK_TARGET_SMEBI32", "1" if has_sme else "0"),
-        ("NK_TARGET_SMELUT2", "1" if has_sme else "0"),
-        ("NK_TARGET_SMEFA64", "1" if has_sme else "0"),
-        # RISC-V targets - not available on macOS
-        ("NK_TARGET_RVV", "0"),
-        ("NK_TARGET_RVVHALF", "0"),
-        ("NK_TARGET_RVVBF16", "0"),
-        ("NK_TARGET_RVVBB", "0"),
     ]
+    macros.extend(probe_all_isas())
     return compile_args, link_args, macros
 
 
@@ -220,89 +337,26 @@ def freebsd_settings() -> tuple[list[str], list[str], list[tuple[str, str]]]:
     compile_args = [
         "-std=c11",
         "-O3",
+        "-fopenmp",
         "-fdiagnostics-color=always",
         "-fvisibility=default",
         "-fPIC",
         "-w",  # Hush warnings
+        *march_baseline_args(),
     ]
     link_args = [
         "-shared",
+        "-fopenmp",
         "-lm",  # Math library
     ]
-    # FreeBSD: Similar to Linux, enable all SIMD targets for detected architecture
-    macros = [
+    macros: list[tuple[str, str]] = [
         ("NK_DYNAMIC_DISPATCH", "1"),
+        ("NK_USE_OPENMP", "1"),
         ("NK_NATIVE_F16", "0"),
         ("NK_NATIVE_BF16", "0"),
-        # x86 targets
-        ("NK_TARGET_HASWELL", "1" if is_64bit_x86() else "0"),
-        ("NK_TARGET_SKYLAKE", "1" if is_64bit_x86() else "0"),
-        ("NK_TARGET_ICELAKE", "1" if is_64bit_x86() else "0"),
-        ("NK_TARGET_GENOA", "1" if is_64bit_x86() else "0"),
-        ("NK_TARGET_SAPPHIRE", "1" if is_64bit_x86() else "0"),
-        ("NK_TARGET_TURIN", "1" if is_64bit_x86() else "0"),
-        ("NK_TARGET_ALDER", "1" if is_64bit_x86() else "0"),
-        ("NK_TARGET_SIERRA", "1" if is_64bit_x86() else "0"),
-        ("NK_TARGET_SAPPHIREAMX", "0"),  # AMX may not be available on FreeBSD
-        ("NK_TARGET_GRANITEAMX", "0"),
-        # ARM NEON targets
-        ("NK_TARGET_NEON", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_NEONHALF", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_NEONSDOT", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_NEONBFDOT", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_NEONFHM", "1" if is_64bit_arm() else "0"),
-        # ARM SVE targets
-        ("NK_TARGET_SVE", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_SVEHALF", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_SVEBFDOT", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_SVESDOT", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_SVE2", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_SVE2P1", "1" if is_64bit_arm() else "0"),
-        # ARM SME targets (may require newer FreeBSD)
-        ("NK_TARGET_SME", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_SME2", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_SME2P1", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_SMEF64", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_SMEHALF", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_SMEBF16", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_SMEBI32", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_SMELUT2", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_SMEFA64", "1" if is_64bit_arm() else "0"),
-        # RISC-V targets
-        ("NK_TARGET_RVV", "1" if is_64bit_riscv() else "0"),
-        ("NK_TARGET_RVVHALF", "1" if is_64bit_riscv() else "0"),
-        ("NK_TARGET_RVVBF16", "1" if is_64bit_riscv() else "0"),
-        ("NK_TARGET_RVVBB", "1" if is_64bit_riscv() else "0"),
     ]
+    macros.extend(probe_all_isas())
     return compile_args, link_args, macros
-
-
-def detect_msvc_version() -> tuple[int, int]:
-    """Detect MSVC version from cl.exe or environment variables."""
-    try:
-        result = subprocess.run(["cl"], capture_output=True, text=True, shell=True)
-        # Parse version from output like "Microsoft (R) C/C++ Optimizing Compiler Version 19.30.30705"
-        for line in result.stderr.split("\n"):
-            if "Version" in line:
-                parts = line.split()
-                for i, part in enumerate(parts):
-                    if part == "Version" and i + 1 < len(parts):
-                        version_str = parts[i + 1]
-                        # Version format is like 19.30.30705
-                        version_parts = version_str.split(".")
-                        if len(version_parts) >= 2:
-                            major = int(version_parts[0])
-                            minor = int(version_parts[1])
-                            print(f"[NumKong] Detected MSVC version {major}.{minor}")
-                            return (major, minor)
-    except Exception:
-        pass
-
-    # Fallback to checking _MSC_VER from environment or defaults
-    # MSVC 2019: 19.20-19.29
-    # MSVC 2022: 19.30-19.39
-    print("[NumKong] MSVC version detection failed, using conservative defaults (MSVC 2019)")
-    return (19, 20)  # Conservative default to MSVC 2019
 
 
 def windows_settings() -> tuple[list[str], list[str], list[tuple[str, str]]]:
@@ -310,64 +364,24 @@ def windows_settings() -> tuple[list[str], list[str], list[tuple[str, str]]]:
     compile_args = [
         "/std:c11",
         "/O2",
+        # `/openmp:llvm` enables OpenMP 3.1+ on MSVC 2019 16.9+ so `size_t`
+        # (unsigned) parallel-for counters compile — the legacy `/openmp` is
+        # frozen at OpenMP 2.0 and rejects them with C3015.
+        "/openmp:llvm",
         # Dealing with MinGW linking errors
         # https://cibuildwheel.readthedocs.io/en/stable/faq/#windows-importerror-dll-load-failed-the-specific-module-could-not-be-found
         "/d2FH4-",
         "/w",
+        *march_baseline_args(),  # MSVC: matches default; documents the contract
     ]
     link_args: list[str] = []
-
-    # Detect MSVC version for feature support
-    msvc_major, msvc_minor = detect_msvc_version()
-    # MSVC 19.44+ (VS 2022 17.14+): all AVX-512 intrinsics available without /arch:AVX512
-    has_full_avx512 = msvc_major >= 19 and msvc_minor >= 44
-
-    # Windows: SVE/SME not supported, x86 SIMD support varies by MSVC version
-    macros = [
+    macros: list[tuple[str, str]] = [
         ("NK_DYNAMIC_DISPATCH", "1"),
+        ("NK_USE_OPENMP", "1"),
         ("NK_NATIVE_F16", "0"),
         ("NK_NATIVE_BF16", "0"),
-        # x86 targets - base support
-        ("NK_TARGET_HASWELL", "1" if is_64bit_x86() else "0"),
-        ("NK_TARGET_SKYLAKE", "1" if is_64bit_x86() else "0"),
-        ("NK_TARGET_ICELAKE", "1" if is_64bit_x86() else "0"),
-        # Advanced x86 targets - require MSVC 19.44+ for full AVX-512 FP16/BF16/VNNI
-        ("NK_TARGET_GENOA", "1" if (is_64bit_x86() and has_full_avx512) else "0"),
-        ("NK_TARGET_SAPPHIRE", "1" if (is_64bit_x86() and has_full_avx512) else "0"),
-        ("NK_TARGET_TURIN", "1" if (is_64bit_x86() and has_full_avx512) else "0"),
-        ("NK_TARGET_ALDER", "1" if (is_64bit_x86() and has_full_avx512) else "0"),
-        ("NK_TARGET_SIERRA", "1" if (is_64bit_x86() and has_full_avx512) else "0"),
-        ("NK_TARGET_SAPPHIREAMX", "1" if (is_64bit_x86() and has_full_avx512) else "0"),
-        ("NK_TARGET_GRANITEAMX", "1" if (is_64bit_x86() and has_full_avx512) else "0"),
-        # ARM NEON targets
-        ("NK_TARGET_NEON", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_NEONHALF", "0"),  # MSVC lacks `float16_t` intrinsics
-        ("NK_TARGET_NEONSDOT", "1" if is_64bit_arm() else "0"),
-        ("NK_TARGET_NEONBFDOT", "0"),  # MSVC lacks `bfloat16x8_t` intrinsics
-        ("NK_TARGET_NEONFHM", "0"),  # MSVC lacks FHM intrinsics
-        # ARM SVE targets - not supported on Windows
-        ("NK_TARGET_SVE", "0"),
-        ("NK_TARGET_SVEHALF", "0"),
-        ("NK_TARGET_SVEBFDOT", "0"),
-        ("NK_TARGET_SVESDOT", "0"),
-        ("NK_TARGET_SVE2", "0"),
-        ("NK_TARGET_SVE2P1", "0"),
-        # ARM SME targets - not supported on Windows
-        ("NK_TARGET_SME", "0"),
-        ("NK_TARGET_SME2", "0"),
-        ("NK_TARGET_SME2P1", "0"),
-        ("NK_TARGET_SMEF64", "0"),
-        ("NK_TARGET_SMEHALF", "0"),
-        ("NK_TARGET_SMEBF16", "0"),
-        ("NK_TARGET_SMEBI32", "0"),
-        ("NK_TARGET_SMELUT2", "0"),
-        ("NK_TARGET_SMEFA64", "0"),
-        # RISC-V targets - not supported on Windows
-        ("NK_TARGET_RVV", "0"),
-        ("NK_TARGET_RVVHALF", "0"),
-        ("NK_TARGET_RVVBF16", "0"),
-        ("NK_TARGET_RVVBB", "0"),
     ]
+    macros.extend(probe_all_isas())
     # MSVC requires architecture-specific macros for winnt.h
     if is_64bit_arm():
         macros.append(("_ARM64_", "1"))
@@ -389,47 +403,15 @@ def emscripten_settings() -> tuple[list[str], list[str], list[tuple[str, str]]]:
     # The EM_JS runtime probes in c/numkong.c are guarded by NK_DYNAMIC_DISPATCH
     # and __EMSCRIPTEN__; when building as a Pyodide side module, we define
     # NK_PYODIDE_SIDE_MODULE to replace them with conservative stubs (serial only).
-    macros = [
+    macros: list[tuple[str, str]] = [
         ("NK_DYNAMIC_DISPATCH", "1"),
         ("NK_PYODIDE_SIDE_MODULE", "1"),
         ("NK_NATIVE_F16", "0"),
         ("NK_NATIVE_BF16", "0"),
-        # No x86, ARM, or RISC-V targets in WASM
-        ("NK_TARGET_HASWELL", "0"),
-        ("NK_TARGET_SKYLAKE", "0"),
-        ("NK_TARGET_ICELAKE", "0"),
-        ("NK_TARGET_GENOA", "0"),
-        ("NK_TARGET_SAPPHIRE", "0"),
-        ("NK_TARGET_TURIN", "0"),
-        ("NK_TARGET_ALDER", "0"),
-        ("NK_TARGET_SIERRA", "0"),
-        ("NK_TARGET_SAPPHIREAMX", "0"),
-        ("NK_TARGET_GRANITEAMX", "0"),
-        ("NK_TARGET_NEON", "0"),
-        ("NK_TARGET_NEONHALF", "0"),
-        ("NK_TARGET_NEONSDOT", "0"),
-        ("NK_TARGET_NEONBFDOT", "0"),
-        ("NK_TARGET_NEONFHM", "0"),
-        ("NK_TARGET_SVE", "0"),
-        ("NK_TARGET_SVEHALF", "0"),
-        ("NK_TARGET_SVEBFDOT", "0"),
-        ("NK_TARGET_SVESDOT", "0"),
-        ("NK_TARGET_SVE2", "0"),
-        ("NK_TARGET_SVE2P1", "0"),
-        ("NK_TARGET_SME", "0"),
-        ("NK_TARGET_SME2", "0"),
-        ("NK_TARGET_SME2P1", "0"),
-        ("NK_TARGET_SMEF64", "0"),
-        ("NK_TARGET_SMEHALF", "0"),
-        ("NK_TARGET_SMEBF16", "0"),
-        ("NK_TARGET_SMEBI32", "0"),
-        ("NK_TARGET_SMELUT2", "0"),
-        ("NK_TARGET_SMEFA64", "0"),
-        ("NK_TARGET_RVV", "0"),
-        ("NK_TARGET_RVVHALF", "0"),
-        ("NK_TARGET_RVVBF16", "0"),
-        ("NK_TARGET_RVVBB", "0"),
     ]
+    # Probing handles everything: non-WASM probes fail (wrong headers),
+    # WASM V128RELAXED probe succeeds if emcc supports relaxed SIMD.
+    macros.extend(probe_all_isas())
     return compile_args, link_args, macros
 
 
@@ -452,24 +434,11 @@ else:
     compile_args, link_args, macros = [], [], []
 
 
-def _is_editable_install() -> bool:
-    if "develop" in sys.argv or ("install" in sys.argv and "-e" in sys.argv):
-        return True
-    return any(Path(p, f"{__lib_name__}.egg-link").exists() for p in sys.path)
-
-
-SETUP_KWARGS = (
-    {
-        "packages": ["numkong"],
-        "package_dir": {"numkong": "python/annotations"},
-        "package_data": {"numkong": ["__init__.pyi", "py.typed"]},
-    }
-    if not _is_editable_install()
-    else {}
-)
-
-if _is_editable_install():
-    print("[NumKong] Editable install detected - skipping bundled type stubs.")
+SETUP_KWARGS = {
+    "packages": ["numkong"],
+    "package_dir": {"numkong": "python/numkong"},
+    "package_data": {"numkong": ["__init__.pyi", "py.typed"]},
+}
 
 
 # Use glob to find all dispatch files
@@ -483,6 +452,7 @@ base_sources = [
     "python/mesh.c",
     "python/maxsim.c",
     "python/numpy_interop.c",
+    "python/dlpack_interop.c",
     "c/numkong.c",
 ]
 
@@ -490,7 +460,10 @@ dispatch_sources = sorted(glob.glob("c/dispatch_*.c"))
 
 ext_modules = [
     Extension(
-        "numkong",
+        # Lives under the `numkong` package so `numkong/__init__.py` runs first
+        # — it sets `KMP_DUPLICATE_LIB_OK=TRUE` before the dynamic linker
+        # initializes the bundled libomp.
+        "numkong._numkong",
         sources=base_sources + dispatch_sources,
         include_dirs=["include", "python"],
         language="c",
@@ -517,11 +490,9 @@ setup(
     author="Ash Vardanian",
     author_email="1983160+ashvardanian@users.noreply.github.com",
     url="https://github.com/ashvardanian/NumKong",
-    description="Portable mixed-precision BLAS-like vector math library for x86 and ARM",
+    description="Portable mixed-precision math, linear-algebra, & retrieval library with 2000+ SIMD kernels for x86, Arm, RISC-V, LoongArch, Power, & WebAssembly",
     long_description=(
-        Path("python/README.md").read_text(encoding="utf8")
-        + "\n\n"
-        + Path("README.md").read_text(encoding="utf8")
+        Path("python/README.md").read_text(encoding="utf8") + "\n\n" + Path("README.md").read_text(encoding="utf8")
     ),
     long_description_content_type="text/markdown",
     license="Apache-2.0",

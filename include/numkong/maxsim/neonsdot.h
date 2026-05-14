@@ -13,7 +13,7 @@
 #ifndef NK_MAXSIM_NEONSDOT_H
 #define NK_MAXSIM_NEONSDOT_H
 
-#if NK_TARGET_ARM_
+#if NK_TARGET_ARM64_
 #if NK_TARGET_NEONSDOT
 
 #include "numkong/types.h"
@@ -46,7 +46,7 @@ NK_PUBLIC nk_size_t nk_maxsim_packed_size_f16_neonsdot(nk_size_t vector_count, n
 }
 
 NK_PUBLIC void nk_maxsim_pack_bf16_neonsdot( //
-    nk_bf16_t const *vectors, nk_size_t vector_count, nk_size_t depth, nk_size_t stride, void *packed) {
+    nk_bf16_t const *vectors, nk_size_t vector_count, nk_size_t depth, nk_size_t stride_in_bytes, void *packed) {
 
     nk_size_t const element_bytes = sizeof(nk_bf16_t);
     nk_size_t depth_i8_padded = nk_maxsim_packed_header_setup_(packed, vector_count, depth, 16, element_bytes);
@@ -58,7 +58,7 @@ NK_PUBLIC void nk_maxsim_pack_bf16_neonsdot( //
     nk_size_t const original_stride = header->original_stride_bytes;
 
     for (nk_size_t vector_index = 0; vector_index < vector_count; vector_index++) {
-        char const *source_row = (char const *)vectors + vector_index * stride;
+        char const *source_row = (char const *)vectors + vector_index * stride_in_bytes;
         nk_f32_t norm_sq;
         nk_maxsim_quantize_vector_(source_row, element_bytes, depth, depth_i8_padded, 127.0f,
                                    (nk_maxsim_to_f32_t)nk_bf16_to_f32_serial,
@@ -72,7 +72,7 @@ NK_PUBLIC void nk_maxsim_pack_bf16_neonsdot( //
 }
 
 NK_PUBLIC void nk_maxsim_pack_f32_neonsdot( //
-    nk_f32_t const *vectors, nk_size_t vector_count, nk_size_t depth, nk_size_t stride, void *packed) {
+    nk_f32_t const *vectors, nk_size_t vector_count, nk_size_t depth, nk_size_t stride_in_bytes, void *packed) {
 
     nk_size_t const element_bytes = sizeof(nk_f32_t);
     nk_size_t depth_i8_padded = nk_maxsim_packed_header_setup_(packed, vector_count, depth, 16, element_bytes);
@@ -84,7 +84,7 @@ NK_PUBLIC void nk_maxsim_pack_f32_neonsdot( //
     nk_size_t const original_stride = header->original_stride_bytes;
 
     for (nk_size_t vector_index = 0; vector_index < vector_count; vector_index++) {
-        char const *source_row = (char const *)vectors + vector_index * stride;
+        char const *source_row = (char const *)vectors + vector_index * stride_in_bytes;
         nk_f32_t norm_sq;
         nk_maxsim_quantize_vector_(source_row, element_bytes, depth, depth_i8_padded, 127.0f, nk_f32_to_f32_,
                                    &quantized_i8[vector_index * depth_i8_padded], &metadata[vector_index], &norm_sq);
@@ -97,7 +97,7 @@ NK_PUBLIC void nk_maxsim_pack_f32_neonsdot( //
 }
 
 NK_PUBLIC void nk_maxsim_pack_f16_neonsdot( //
-    nk_f16_t const *vectors, nk_size_t vector_count, nk_size_t depth, nk_size_t stride, void *packed) {
+    nk_f16_t const *vectors, nk_size_t vector_count, nk_size_t depth, nk_size_t stride_in_bytes, void *packed) {
 
     nk_size_t const element_bytes = sizeof(nk_f16_t);
     nk_size_t depth_i8_padded = nk_maxsim_packed_header_setup_(packed, vector_count, depth, 16, element_bytes);
@@ -109,7 +109,7 @@ NK_PUBLIC void nk_maxsim_pack_f16_neonsdot( //
     nk_size_t const original_stride = header->original_stride_bytes;
 
     for (nk_size_t vector_index = 0; vector_index < vector_count; vector_index++) {
-        char const *source_row = (char const *)vectors + vector_index * stride;
+        char const *source_row = (char const *)vectors + vector_index * stride_in_bytes;
         nk_f32_t norm_sq;
         nk_maxsim_quantize_vector_(source_row, element_bytes, depth, depth_i8_padded, 127.0f,
                                    (nk_maxsim_to_f32_t)nk_f16_to_f32_neon,
@@ -149,39 +149,39 @@ NK_INTERNAL void nk_maxsim_coarse_argmax_neonsdot_(                             
             // Depth loop: 16 bytes per step
             for (nk_size_t depth_index = 0; depth_index < depth_i8_padded; depth_index += 16) {
                 int8x16_t query_i8x16_0 = vld1q_s8(
-                    (int8_t const *)(query_i8 + (query_block_start_index + 0) * depth_i8_padded + depth_index));
+                    (nk_i8_t const *)(query_i8 + (query_block_start_index + 0) * depth_i8_padded + depth_index));
                 int8x16_t query_i8x16_1 = vld1q_s8(
-                    (int8_t const *)(query_i8 + (query_block_start_index + 1) * depth_i8_padded + depth_index));
+                    (nk_i8_t const *)(query_i8 + (query_block_start_index + 1) * depth_i8_padded + depth_index));
                 int8x16_t query_i8x16_2 = vld1q_s8(
-                    (int8_t const *)(query_i8 + (query_block_start_index + 2) * depth_i8_padded + depth_index));
+                    (nk_i8_t const *)(query_i8 + (query_block_start_index + 2) * depth_i8_padded + depth_index));
                 int8x16_t query_i8x16_3 = vld1q_s8(
-                    (int8_t const *)(query_i8 + (query_block_start_index + 3) * depth_i8_padded + depth_index));
+                    (nk_i8_t const *)(query_i8 + (query_block_start_index + 3) * depth_i8_padded + depth_index));
 
                 int8x16_t document_i8x16;
 
                 document_i8x16 = vld1q_s8(
-                    (int8_t const *)(document_i8 + (document_block_start_index + 0) * depth_i8_padded + depth_index));
+                    (nk_i8_t const *)(document_i8 + (document_block_start_index + 0) * depth_i8_padded + depth_index));
                 accumulator_tiles_i32x4[0][0] = vdotq_s32(accumulator_tiles_i32x4[0][0], query_i8x16_0, document_i8x16);
                 accumulator_tiles_i32x4[1][0] = vdotq_s32(accumulator_tiles_i32x4[1][0], query_i8x16_1, document_i8x16);
                 accumulator_tiles_i32x4[2][0] = vdotq_s32(accumulator_tiles_i32x4[2][0], query_i8x16_2, document_i8x16);
                 accumulator_tiles_i32x4[3][0] = vdotq_s32(accumulator_tiles_i32x4[3][0], query_i8x16_3, document_i8x16);
 
                 document_i8x16 = vld1q_s8(
-                    (int8_t const *)(document_i8 + (document_block_start_index + 1) * depth_i8_padded + depth_index));
+                    (nk_i8_t const *)(document_i8 + (document_block_start_index + 1) * depth_i8_padded + depth_index));
                 accumulator_tiles_i32x4[0][1] = vdotq_s32(accumulator_tiles_i32x4[0][1], query_i8x16_0, document_i8x16);
                 accumulator_tiles_i32x4[1][1] = vdotq_s32(accumulator_tiles_i32x4[1][1], query_i8x16_1, document_i8x16);
                 accumulator_tiles_i32x4[2][1] = vdotq_s32(accumulator_tiles_i32x4[2][1], query_i8x16_2, document_i8x16);
                 accumulator_tiles_i32x4[3][1] = vdotq_s32(accumulator_tiles_i32x4[3][1], query_i8x16_3, document_i8x16);
 
                 document_i8x16 = vld1q_s8(
-                    (int8_t const *)(document_i8 + (document_block_start_index + 2) * depth_i8_padded + depth_index));
+                    (nk_i8_t const *)(document_i8 + (document_block_start_index + 2) * depth_i8_padded + depth_index));
                 accumulator_tiles_i32x4[0][2] = vdotq_s32(accumulator_tiles_i32x4[0][2], query_i8x16_0, document_i8x16);
                 accumulator_tiles_i32x4[1][2] = vdotq_s32(accumulator_tiles_i32x4[1][2], query_i8x16_1, document_i8x16);
                 accumulator_tiles_i32x4[2][2] = vdotq_s32(accumulator_tiles_i32x4[2][2], query_i8x16_2, document_i8x16);
                 accumulator_tiles_i32x4[3][2] = vdotq_s32(accumulator_tiles_i32x4[3][2], query_i8x16_3, document_i8x16);
 
                 document_i8x16 = vld1q_s8(
-                    (int8_t const *)(document_i8 + (document_block_start_index + 3) * depth_i8_padded + depth_index));
+                    (nk_i8_t const *)(document_i8 + (document_block_start_index + 3) * depth_i8_padded + depth_index));
                 accumulator_tiles_i32x4[0][3] = vdotq_s32(accumulator_tiles_i32x4[0][3], query_i8x16_0, document_i8x16);
                 accumulator_tiles_i32x4[1][3] = vdotq_s32(accumulator_tiles_i32x4[1][3], query_i8x16_1, document_i8x16);
                 accumulator_tiles_i32x4[2][3] = vdotq_s32(accumulator_tiles_i32x4[2][3], query_i8x16_2, document_i8x16);
@@ -211,27 +211,27 @@ NK_INTERNAL void nk_maxsim_coarse_argmax_neonsdot_(                             
             int32x4_t accumulator_i32x4_3 = vdupq_n_s32(0);
 
             for (nk_size_t depth_index = 0; depth_index < depth_i8_padded; depth_index += 16) {
-                int8x16_t document_i8x16 = vld1q_s8((int8_t const *)(document_i8_row + depth_index));
+                int8x16_t document_i8x16 = vld1q_s8((nk_i8_t const *)(document_i8_row + depth_index));
 
                 accumulator_i32x4_0 = vdotq_s32(
                     accumulator_i32x4_0,
                     vld1q_s8(
-                        (int8_t const *)(query_i8 + (query_block_start_index + 0) * depth_i8_padded + depth_index)),
+                        (nk_i8_t const *)(query_i8 + (query_block_start_index + 0) * depth_i8_padded + depth_index)),
                     document_i8x16);
                 accumulator_i32x4_1 = vdotq_s32(
                     accumulator_i32x4_1,
                     vld1q_s8(
-                        (int8_t const *)(query_i8 + (query_block_start_index + 1) * depth_i8_padded + depth_index)),
+                        (nk_i8_t const *)(query_i8 + (query_block_start_index + 1) * depth_i8_padded + depth_index)),
                     document_i8x16);
                 accumulator_i32x4_2 = vdotq_s32(
                     accumulator_i32x4_2,
                     vld1q_s8(
-                        (int8_t const *)(query_i8 + (query_block_start_index + 2) * depth_i8_padded + depth_index)),
+                        (nk_i8_t const *)(query_i8 + (query_block_start_index + 2) * depth_i8_padded + depth_index)),
                     document_i8x16);
                 accumulator_i32x4_3 = vdotq_s32(
                     accumulator_i32x4_3,
                     vld1q_s8(
-                        (int8_t const *)(query_i8 + (query_block_start_index + 3) * depth_i8_padded + depth_index)),
+                        (nk_i8_t const *)(query_i8 + (query_block_start_index + 3) * depth_i8_padded + depth_index)),
                     document_i8x16);
             }
 
@@ -260,8 +260,8 @@ NK_INTERNAL void nk_maxsim_coarse_argmax_neonsdot_(                             
             int32x4_t accumulator_i32x4 = vdupq_n_s32(0);
 
             for (nk_size_t depth_index = 0; depth_index < depth_i8_padded; depth_index += 16) {
-                int8x16_t query_i8x16 = vld1q_s8((int8_t const *)(query_i8_row + depth_index));
-                int8x16_t document_i8x16 = vld1q_s8((int8_t const *)(document_i8_row + depth_index));
+                int8x16_t query_i8x16 = vld1q_s8((nk_i8_t const *)(query_i8_row + depth_index));
+                int8x16_t document_i8x16 = vld1q_s8((nk_i8_t const *)(document_i8_row + depth_index));
                 accumulator_i32x4 = vdotq_s32(accumulator_i32x4, query_i8x16, document_i8x16);
             }
 
@@ -390,5 +390,5 @@ NK_PUBLIC void nk_maxsim_packed_f16_neonsdot( //
 #endif
 
 #endif // NK_TARGET_NEONSDOT
-#endif // NK_TARGET_ARM_
+#endif // NK_TARGET_ARM64_
 #endif // NK_MAXSIM_NEONSDOT_H

@@ -1,95 +1,109 @@
 #!/usr/bin/env python3
-"""
-Module: test_base.py
+"""Shared test infrastructure for the NumKong test suite.
 
-Shared test infrastructure for the NumKong test suite.
-Mirrors ``test.hpp`` from the C++ test suite.
-
-Provides helpers, random data generators, capability detection,
-and configuration used by all test files. Operation-specific baselines
-live in their respective test files (test_dot.py, test_spatial.py, etc.).
-
-Key exported symbols
---------------------
-Helpers:
-    make_random(shape, dtype)       Unified random-data factory → (raw, baseline).
-    make_nk(np_arr, dtype)          Copy NumPy array into an ``nk.Tensor``.
-    tolerances_for_dtype(dtype)     Returns ``(atol, rtol)`` for assertion checks.
-    random_of_dtype(dtype, shape)   Legacy wrapper around ``make_random``.
-Constants:
-    NATIVE_COMPUTE_DTYPE            Maps dtype → NumPy dtype for native-precision baselines.
-    NK_ATOL, NK_RTOL                Default assertion tolerances.
-    DECIMAL_PRECISION              Shared decimal precision for high-accuracy baselines.
-
-Profiling:
-    profile(callable, ...)          Time a callable, return ``(ns, result)``.
-
-Fixtures:
-    seed_rng                       Auto-seeds NumPy RNG (autouse).
-
-Stats:
-    create_stats / collect_errors / collect_warnings / print_stats_report
-
-**Environment Variables** (parity with ``test.cpp`` / ``test.hpp``)::
-
-    NK_DENSE_DIMENSIONS   Vector dims for dot/spatial/geo tests (default: "11,97,1536")
-    NK_CURVED_DIMENSIONS  Vector dims for curved-space tests (default: "11,97")
-    NK_MATRIX_HEIGHT      GEMM M dimensions (default: "1024")
-    NK_MATRIX_WIDTH       GEMM N dimensions (default: "128")
-    NK_MATRIX_DEPTH       GEMM K dimensions (default: "1536")
-    NK_SEED               Deterministic seed for np.random (default: None = OS entropy)
-    NK_REPETITIONS        Override randomized test repeat count (default: 10)
-    NK_SPARSE_DIMENSIONS  Universe size for sparse tests (default: "256")
-    NK_MESH_POINTS        Point count for mesh alignment tests (default: 100)
-    NK_MAX_COORD_ANGLE  Maximum angle in degrees for geospatial (default: 180)
+Provides random data generators, capability detection, high-precision baselines
+via ``precise_decimal()``, and assertion helpers. Mirrors ``test.hpp`` from the
+C++ test suite.
 """
 
 from __future__ import annotations
 
 import array
 import collections
+import contextlib
+import decimal
 import faulthandler
+import math
 import os
 import platform
 import random
 import sys
 import time
+from collections.abc import Callable, Generator
+from typing import TYPE_CHECKING, Any
 
 import numkong as nk
 import pytest
 
+if TYPE_CHECKING:
+    import numpy as np  # static-analysis-only; the runtime try/except below is authoritative
+
 faulthandler.enable()
 
 _nk_seed_base: int | None = int(s) if (s := os.environ.get("NK_SEED")) is not None else None
+_nk_in_qemu: bool = "NK_IN_QEMU" in os.environ
 
-randomized_repetitions_count: int = int(s) if (s := os.environ.get("NK_REPETITIONS")) is not None else 10
+_nk_possible_dimensions = (
+    [1, 4, 16, 33, 64]
+    if _nk_in_qemu
+    else [
+        # start with simplest cases
+        4,
+        8,
+        16,
+        64,
+        128,
+        # cover tiny cases
+        1,
+        2,
+        3,
+        5,
+        7,
+        9,
+        # corner cases around common sizes
+        15,
+        16,
+        17,
+        31,
+        32,
+        33,
+        63,
+        64,
+        65,
+        97,
+    ]
+)
+
+
+randomized_repetitions_count: int = (
+    int(s) if (s := os.environ.get("NK_REPETITIONS")) is not None else (3 if _nk_in_qemu else 10)
+)
 
 dense_dimensions: list[int] = (
     [int(d) for d in s.split(",")]
     if (s := os.environ.get("NK_DENSE_DIMENSIONS")) is not None
-    else [1, 2, 3, 4, 7, 8, 15, 16, 11, 97, 1536]
+    else _nk_possible_dimensions
 )
 
-curved_dimensions: list[int] = (
-    [int(d) for d in s.split(",")] if (s := os.environ.get("NK_CURVED_DIMENSIONS")) is not None else [11, 97]
+# Deterministic random subsamples for multi-dimensional parametrization (height × width × depth),
+# matching the C API naming in dots.h. Override via NK_MATRIX_HEIGHT/WIDTH/DEPTH env vars.
+_dim_sample_k = min(6, len(dense_dimensions))
+test_height_dimensions: list[int] = (
+    [int(d) for d in s.split(",")]
+    if (s := os.environ.get("NK_MATRIX_HEIGHT")) is not None
+    else sorted(random.Random(42).sample(dense_dimensions, _dim_sample_k))
+)
+test_width_dimensions: list[int] = (
+    [int(d) for d in s.split(",")]
+    if (s := os.environ.get("NK_MATRIX_WIDTH")) is not None
+    else sorted(random.Random(43).sample(dense_dimensions, _dim_sample_k))
+)
+test_depth_dimensions: list[int] = (
+    [int(d) for d in s.split(",")]
+    if (s := os.environ.get("NK_MATRIX_DEPTH")) is not None
+    else sorted(random.Random(44).sample(dense_dimensions, _dim_sample_k))
 )
 
-matrix_heights: list[int] = (
-    [int(d) for d in s.split(",")] if (s := os.environ.get("NK_MATRIX_HEIGHT")) is not None else [1024]
-)
+reduced_repetitions_count: int = max(1, randomized_repetitions_count // 5)
 
-matrix_widths: list[int] = (
-    [int(d) for d in s.split(",")] if (s := os.environ.get("NK_MATRIX_WIDTH")) is not None else [128]
-)
-
-matrix_depths: list[int] = (
-    [int(d) for d in s.split(",")] if (s := os.environ.get("NK_MATRIX_DEPTH")) is not None else [1536]
+test_curved_dimensions: list[int] = (
+    [int(d) for d in s.split(",")]
+    if (s := os.environ.get("NK_CURVED_DIMENSIONS")) is not None
+    else sorted(random.Random(45).sample(dense_dimensions, min(5, len(dense_dimensions))))
 )
 
 sparse_dimensions: list[int] = (
-    [int(d) for d in s.split(",")]
-    if (s := os.environ.get("NK_SPARSE_DIMENSIONS")) is not None
-    else [256]
+    [int(d) for d in s.split(",")] if (s := os.environ.get("NK_SPARSE_DIMENSIONS")) is not None else [256]
 )
 
 mesh_points: int = int(s) if (s := os.environ.get("NK_MESH_POINTS")) is not None else 100
@@ -100,8 +114,7 @@ try:
     import numpy as np
 
     numpy_available = True
-except:  # noqa: E722
-    np = None
+except Exception:
     numpy_available = False
 
 try:
@@ -110,7 +123,6 @@ try:
     scipy_available = True
 except ImportError:
     scipy_available = False
-
 
 try:
     import ml_dtypes  # noqa: F401
@@ -160,19 +172,45 @@ PACKING_GRANULARITY: dict[str, int] = {
     "uint1": 8,
 }
 
+
 def round_up_to(value: int, multiple: int) -> int:
     """Round *value* up to the nearest multiple of *multiple*."""
     return (value + multiple - 1) // multiple * multiple
 
 
-DECIMAL_PRECISION = 120
+_DTYPES_NEEDING_DECIMAL = {"float32", "float64", "complex64", "complex128"}
 
 
-def is_running_under_qemu():
+@contextlib.contextmanager
+def precise_decimal(dtype: str | None = None) -> Generator[tuple[Callable, Callable, Callable], None, None]:
+    """Yield ``(upcast, sqrt, ln)`` helpers for high-precision baselines.
+
+    When *dtype* is a small type (float32, float16, int8, …) native ``float``
+    already exceeds its precision, so we skip the Decimal overhead.  For
+    float64/complex128 we use 120-digit Decimal arithmetic.
+
+    Usage::
+
+        with precise_decimal("float32") as (upcast, sqrt, ln):
+            total = upcast(0)
+            for x, y in zip(a, b):
+                total += upcast(x) * upcast(y)
+            return float(sqrt(total))
+    """
+    if dtype is not None and dtype not in _DTYPES_NEEDING_DECIMAL:
+        yield float, math.sqrt, math.log
+    else:
+        ctx = decimal.Context(prec=120)
+        ctx.traps[decimal.InvalidOperation] = False
+        with decimal.localcontext(ctx):
+            yield decimal.Decimal.from_float, decimal.Decimal.sqrt, decimal.Decimal.ln
+
+
+def is_running_under_qemu() -> bool:
     return "NK_IN_QEMU" in os.environ
 
 
-def profile(callable, *args, **kwargs) -> tuple:
+def profile(callable: Callable | None, *args: Any, **kwargs: Any) -> tuple[int, Any]:
     if callable is None:
         return 0, None
     before = time.perf_counter_ns()
@@ -188,7 +226,7 @@ def scipy_metric_name(metric: str) -> str:
     return metric
 
 
-def to_array(x, dtype=None):
+def to_array(x: Any, dtype: str | None = None) -> np.ndarray:
     if numpy_available:
         y = np.array(x)
         if dtype is not None:
@@ -226,7 +264,7 @@ def tolerances_for_dtype(dtype: str) -> tuple[float, float]:
     return _DTYPE_TOLERANCES.get(dtype, (NK_ATOL, NK_RTOL))
 
 
-def random_of_dtype(dtype, shape):
+def random_of_dtype(dtype: str, shape: tuple[int, ...]) -> tuple[Any, Any]:
     """Legacy helper — thin wrapper around :func:`make_random`."""
     raw, _ = make_random(shape, dtype)
     return raw
@@ -244,7 +282,7 @@ class LazyFormat:
         return self._fn()
 
 
-def f32_downcast_to_bf16(array):
+def f32_downcast_to_bf16(array: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Converts an array of 32-bit floats into 16-bit brain-floats.
 
     Uses IEEE 754 round-to-nearest-even (banker's rounding) to match
@@ -313,7 +351,7 @@ def u8_downcast_to_u4(array):
     return _pack_nibbles(array)
 
 
-def hex_array(arr):
+def hex_array(arr: Any) -> str:
     """Converts numerical array into a string of comma-separated hexadecimal values for debugging."""
     arr = np.asarray(arr)
     if not np.issubdtype(arr.dtype, np.integer):
@@ -479,7 +517,7 @@ def _make_random_fallback(shape, dtype, seed):
     return raw, baseline
 
 
-def make_random(shape, dtype, seed=0):
+def make_random(shape: int | tuple[int, ...], dtype: str, seed: int = 0) -> tuple[Any, Any]:
     """Unified random-data factory.
 
     Returns ``(raw, baseline)`` where:
@@ -500,7 +538,7 @@ def make_random(shape, dtype, seed=0):
     return _make_random_fallback(shape, dtype, seed)
 
 
-def make_nk(np_arr, dtype=None):
+def make_nk(np_arr: np.ndarray, dtype: str | None = None) -> nk.Tensor:
     """Copy a NumPy array into a NumKong tensor."""
     if dtype is None:
         dtype = str(np_arr.dtype)
@@ -513,7 +551,7 @@ def make_nk(np_arr, dtype=None):
     return nk_arr
 
 
-def downcast_f32_to_dtype(f32_arr, dtype):
+def downcast_f32_to_dtype(f32_arr: np.ndarray, dtype: str) -> tuple[np.ndarray, np.ndarray]:
     """Downcast an f32 array to *dtype*, returning (raw, f64_baseline).
 
     For native NumPy dtypes (float16/32/64, int*), casts directly.
@@ -533,22 +571,26 @@ available_capabilities: dict[str, str] = nk.get_capabilities()
 # fmt: off
 possible_x86_capabilities: list[str] = [
     "haswell", "alder", "sierra",
-    "skylake", "icelake", "genoa", "sapphire", "turin",
-    "sapphireamx", "graniteamx",
+    "skylake", "icelake", "genoa", "turin", "sapphire",
+    "sapphireamx", "graniteamx", "diamond",
 ]
 possible_arm_capabilities: list[str] = [
-    "neon", "neonhalf", "neonfhm", "neonbfdot", "neonsdot",
+    "neon", "neonhalf", "neonfhm", "neonbfdot", "neonsdot", "neonfp8",
     "sve", "svehalf", "svebfdot", "svesdot", "sve2", "sve2p1",
-    "sme", "sme2", "sme2p1", "smef64", "smehalf", "smebf16", "smelut2", "smefa64",
+    "sme", "sme2", "sme2p1", "smef64", "smehalf", "smebf16", "smebi32", "smelut2", "smefa64",
 ]
 possible_rvv_capabilities: list[str] = ["rvv", "rvvhalf", "rvvbf16", "rvvbb"]
+possible_loongarch_capabilities: list[str] = ["loongsonasx"]
+possible_power_capabilities: list[str] = ["powervsx"]
 possible_wasm_capabilities: list[str] = ["v128relaxed"]
 # fmt: on
 
-possible_x86_capabilities = [c for c in possible_x86_capabilities if available_capabilities[c]]
-possible_arm_capabilities = [c for c in possible_arm_capabilities if available_capabilities[c]]
-possible_rvv_capabilities = [c for c in possible_rvv_capabilities if available_capabilities[c]]
-possible_wasm_capabilities = [c for c in possible_wasm_capabilities if available_capabilities[c]]
+possible_x86_capabilities = [c for c in possible_x86_capabilities if available_capabilities.get(c, False)]
+possible_arm_capabilities = [c for c in possible_arm_capabilities if available_capabilities.get(c, False)]
+possible_rvv_capabilities = [c for c in possible_rvv_capabilities if available_capabilities.get(c, False)]
+possible_loongarch_capabilities = [c for c in possible_loongarch_capabilities if available_capabilities.get(c, False)]
+possible_power_capabilities = [c for c in possible_power_capabilities if available_capabilities.get(c, False)]
+possible_wasm_capabilities = [c for c in possible_wasm_capabilities if available_capabilities.get(c, False)]
 
 hardware_capabilities: list[str] = []
 machine_architecture = platform.machine()
@@ -560,6 +602,10 @@ if sys.platform == "linux":
         hardware_capabilities = possible_arm_capabilities
     elif machine_architecture == "riscv64":
         hardware_capabilities = possible_rvv_capabilities
+    elif machine_architecture == "loongarch64":
+        hardware_capabilities = possible_loongarch_capabilities
+    elif machine_architecture in ("ppc64le", "ppc64"):
+        hardware_capabilities = possible_power_capabilities
 elif sys.platform == "darwin":
     if machine_architecture == "x86_64":
         hardware_capabilities = possible_x86_capabilities
@@ -596,7 +642,7 @@ def keep_one_capability(cap: str):
     current_capability = cap
 
 
-def create_stats():
+def create_stats() -> dict[str, list]:
     """Create a fresh stats dict for error collection."""
     return {
         "metric": [],
@@ -624,13 +670,19 @@ def _infer_dtype_name(value) -> str:
         if hasattr(dt, "name"):
             return dt.name
         return str(dt)
+    if isinstance(value, int):
+        return "int64"
+    if isinstance(value, float):
+        return "float64"
     if numpy_available:
         arr = np.asarray(value)
         return arr.dtype.name
     return ""
 
 
-def assert_allclose(actual, expected, atol=_SENTINEL, rtol=_SENTINEL, err_msg=""):
+def assert_allclose(
+    actual: Any, expected: Any, atol: object = _SENTINEL, rtol: object = _SENTINEL, err_msg: str = ""
+) -> None:
     """Drop-in replacement for ``np.testing.assert_allclose`` with dtype-aware defaults.
 
     When both *atol* and *rtol* are omitted the tolerances are inferred from
@@ -652,8 +704,11 @@ def assert_allclose(actual, expected, atol=_SENTINEL, rtol=_SENTINEL, err_msg=""
         if not np.issubdtype(e_arr.dtype, np.complexfloating):
             e_arr = e_arr.astype(float)
         np.testing.assert_allclose(
-            a_arr, e_arr,
-            atol=atol, rtol=rtol, err_msg=err_msg,
+            a_arr,
+            e_arr,
+            atol=atol,
+            rtol=rtol,
+            err_msg=err_msg,
         )
         return
     # Scalar path
@@ -729,8 +784,8 @@ def collect_errors(
     baseline_duration: float,
     nk_result: float,
     nk_duration: float,
-    stats,
-):
+    stats: dict[str, list],
+) -> None:
     """Calculates and aggregates errors for a given test."""
     if numpy_available:
         abs_bl, rel_bl, abs_nk, rel_nk = _compute_errors_numpy(accurate_result, baseline_result, nk_result)
@@ -750,7 +805,7 @@ def collect_errors(
     stats["nk_duration"].append(nk_duration)
 
 
-def collect_warnings(message: str, stats: dict):
+def collect_warnings(message: str, stats: dict[str, list]) -> None:
     """Collects warnings for the final report."""
     full_name = os.environ.get("PYTEST_CURRENT_TEST", "unknown::unknown").split(" ")[0]
     function_name = full_name.split("::")[-1].split("[")[0]
@@ -782,7 +837,7 @@ CapabilityRecord = collections.namedtuple(
 )
 
 
-def print_stats_report(stats):
+def print_stats_report(stats: dict[str, list]) -> None:
     """Print a condensed error/speedup report: two rows per (metric, dtype) showing min/max ndim."""
     if not stats["metric"]:
         return
@@ -935,7 +990,7 @@ def print_stats_report(stats):
 
 
 @pytest.fixture(autouse=True)
-def seed_rng(__pytest_repeat_step_number):
+def seed_rng(__pytest_repeat_step_number: int) -> int:
     """Auto-seed NumPy RNG before every test and return the computed seed.
 
     When NK_SEED is set, each @pytest.mark.repeat() step gets a unique
@@ -951,7 +1006,7 @@ def seed_rng(__pytest_repeat_step_number):
 
 
 @pytest.fixture
-def nk_seed(seed_rng):
+def nk_seed(seed_rng: int) -> int:
     """Per-test seed that incorporates the repeat step number.
 
     Wraps *seed_rng* under the name ``nk_seed`` so tests that build data
@@ -969,7 +1024,7 @@ ARRAY_TYPECODES = {
 }
 
 
-def make_random_buffer(n, dtype="float32"):
+def make_random_buffer(n: int, dtype: str = "float32") -> array.array:
     """Create a random array.array for the given dtype — no numpy needed."""
     tc, lo, hi = ARRAY_TYPECODES[dtype]
     if tc in ("f", "d"):
@@ -978,7 +1033,7 @@ def make_random_buffer(n, dtype="float32"):
         return array.array(tc, [random.randint(int(lo), int(hi)) for _ in range(n)])
 
 
-def make_positive_buffer(n, dtype="float32"):
+def make_positive_buffer(n: int, dtype: str = "float32") -> array.array:
     """Create a random positive array.array — for probability distributions."""
     tc = "f" if dtype == "float32" else "d"
     vals = [random.uniform(0.01, 1.0) for _ in range(n)]
